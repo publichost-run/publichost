@@ -1,0 +1,122 @@
+# Topology: nginx runs on the HOST (outside Docker) — this stack runs
+# PublicHost server, FastAPI backend, Celery workers, Redis and PostgreSQL.
+# SSH traffic goes straight to the publichost container, nginx never touches it.
+#
+# Copy .env.docker.example to .env.docker and adjust values, then run:
+#   docker compose up -d
+services:
+  publichost:
+    build: .
+    image: publichost-backend:latest
+    container_name: publichost
+    restart: unless-stopped
+    env_file: .env.docker
+    ports:
+      # SSH endpoint. In production clients expect port 22: either publish
+      # "22:2222" (after moving the host sshd to another port) or bind a
+      # dedicated IP. Do not change without confirming with the user.
+      - "${PUBLICHOST_EXTERNAL_SSH_PORT:-2222}:${PUBLICHOST_SSH_PORT:-2222}"
+      # HTTP reverse proxy for host nginx.
+      - "${PUBLICHOST_EXTERNAL_HTTP_BIND:-127.0.0.1}:${PUBLICHOST_EXTERNAL_HTTP_PORT:-8080}:${PUBLICHOST_HTTP_PORT:-8080}"
+    environment:
+      PUBLICHOST_BASE_DOMAIN: ${PUBLICHOST_BASE_DOMAIN:-publichost.run}
+      PUBLICHOST_SSH_DOMAIN: ${PUBLICHOST_SSH_DOMAIN:-publichost.run}
+      PUBLICHOST_FRONTEND_DOMAIN: ${PUBLICHOST_FRONTEND_DOMAIN:-publichost.io}
+      PUBLICHOST_SSH_HOST: ${PUBLICHOST_SSH_HOST:-0.0.0.0}
+      PUBLICHOST_SSH_PORT: ${PUBLICHOST_SSH_PORT:-2222}
+      PUBLICHOST_HTTP_HOST: ${PUBLICHOST_HTTP_HOST:-0.0.0.0}
+      PUBLICHOST_HTTP_PORT: ${PUBLICHOST_HTTP_PORT:-8080}
+      PUBLICHOST_HOST_KEY_PATH: ${PUBLICHOST_HOST_KEY_PATH:-/data/host_key}
+      PUBLICHOST_REDIS_URL: ${PUBLICHOST_REDIS_URL:-redis://redis:6379/0}
+      PUBLICHOST_WEBLOGS_PATH: ${PUBLICHOST_WEBLOGS_PATH:-/app/weblogs}
+    volumes:
+      # Host key survives rebuilds. Deleting this volume rotates the key —
+      # clients will then see an SSH host-key-changed warning.
+      - hostkey:/data
+      - weblogs:/app/weblogs
+    healthcheck:
+      # Plain TCP connect; note that each check logs an Assigned/Released pair.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; socket.create_connection(('127.0.0.1', ${PUBLICHOST_SSH_PORT:-2222}), timeout=3).close()",
+        ]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: publichost-redis
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: publichost-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PUBLICHOST_POSTGRES_USER:-publichost}
+      POSTGRES_PASSWORD: ${PUBLICHOST_POSTGRES_PASSWORD:-publichost}
+      POSTGRES_DB: ${PUBLICHOST_POSTGRES_DB:-publichost}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build: .
+    image: publichost-backend:latest
+    container_name: publichost-api
+    restart: unless-stopped
+    command: ["publichost-api"]
+    env_file: .env.docker
+    environment:
+      PUBLICHOST_REDIS_URL: ${PUBLICHOST_REDIS_URL:-redis://redis:6379/0}
+      PUBLICHOST_DATABASE_URL: ${PUBLICHOST_DATABASE_URL:-postgresql+asyncpg://publichost:publichost@postgres:5432/publichost}
+      PUBLICHOST_WEBLOGS_PATH: ${PUBLICHOST_WEBLOGS_PATH:-/app/weblogs}
+      PUBLICHOST_API_HOST: ${PUBLICHOST_API_HOST:-0.0.0.0}
+      PUBLICHOST_API_PORT: ${PUBLICHOST_API_PORT:-8000}
+    ports:
+      - "${PUBLICHOST_EXTERNAL_API_BIND:-127.0.0.1}:${PUBLICHOST_EXTERNAL_API_PORT:-8000}:${PUBLICHOST_API_PORT:-8000}"
+    volumes:
+      - weblogs:/app/weblogs
+    depends_on:
+      - postgres
+      - redis
+
+  worker:
+    build: .
+    image: publichost-backend:latest
+    container_name: publichost-worker
+    restart: unless-stopped
+    command: ["publichost-worker"]
+    env_file: .env.docker
+    environment:
+      PUBLICHOST_REDIS_URL: ${PUBLICHOST_REDIS_URL:-redis://redis:6379/0}
+      PUBLICHOST_DATABASE_URL: ${PUBLICHOST_DATABASE_URL:-postgresql+asyncpg://publichost:publichost@postgres:5432/publichost}
+    depends_on:
+      - postgres
+      - redis
+
+  beat:
+    build: .
+    image: publichost-backend:latest
+    container_name: publichost-beat
+    restart: unless-stopped
+    command: ["publichost-beat"]
+    env_file: .env.docker
+    environment:
+      PUBLICHOST_REDIS_URL: ${PUBLICHOST_REDIS_URL:-redis://redis:6379/0}
+      PUBLICHOST_DATABASE_URL: ${PUBLICHOST_DATABASE_URL:-postgresql+asyncpg://publichost:publichost@postgres:5432/publichost}
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  hostkey:
+  weblogs:
+  redisdata:
+  pgdata:

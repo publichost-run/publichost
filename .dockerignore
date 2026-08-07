@@ -1,0 +1,16 @@
+.git
+.claude
+.kimi-code
+.venv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+tests/
+deploy/
+Dockerfile
+.dockerignore
+docker-compose.yml
+host_key
+host_key.pub
+.env
