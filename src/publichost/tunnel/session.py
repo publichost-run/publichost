@@ -111,6 +111,17 @@ class BannerSession(asyncssh.SSHServerSession):
             return
         if self._chan is None:
             return
+        # This session has no real PTY line discipline, so a Ctrl+C keypress
+        # arrives as a literal ETX (0x03) byte rather than a SIGINT the way
+        # it would against a real remote shell. The banner promises "Press
+        # Ctrl+C to stop", so treat it the same as typing `exit`, discarding
+        # whatever partial line preceded it (matching normal shell behavior
+        # of ^C cancelling the current input line).
+        if "\x03" in data:
+            self._chan.write("^C\r\n")
+            self._input_buffer = ""
+            self._handle_command("exit")
+            return
         # Echo input back to the client.
         self._chan.write(data)
         self._input_buffer += data
