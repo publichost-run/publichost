@@ -129,6 +129,15 @@ class Registry:
     def __len__(self) -> int:
         return len(self._taken)
 
+    @property
+    def active_tunnel_count(self) -> int:
+        """Number of tunnels with a bound listener that are not closed/expired."""
+        return sum(
+            1
+            for info in self._tunnels.values()
+            if info.listen_port is not None and info.status not in ("closed", "expired")
+        )
+
     def acquire(self) -> tuple[str, str]:
         """Reserve a random free subdomain and return (domain, token).
 

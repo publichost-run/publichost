@@ -1,4 +1,7 @@
-"""Pydantic schemas for the `/channel/weblogs` WebSocket contract.
+"""Pydantic schemas for the public API contracts.
+
+Covers the `/channel/weblogs` WebSocket contract plus the two public REST
+endpoints (`/api/v1/cli/version` and `/api/v1/stats`).
 
 Frontend contract: every message sent over the WebSocket is a JSON object
 shaped like one of the models below, discriminated by the `type` field.
@@ -54,3 +57,22 @@ WeblogsMessage = Annotated[
     WeblogsLogMessage | WeblogsStatusMessage | WeblogsErrorMessage,
     Field(discriminator="type"),
 ]
+
+
+class CliVersionResponse(BaseModel):
+    """GET /api/v1/cli/version — lets the CLI know if it's out of date."""
+
+    latest: str
+    min_supported: str
+    released_at: str
+    release_url: str
+    install_command: str
+
+
+class StatsResponse(BaseModel):
+    """GET /api/v1/stats — public live numbers shown on the marketing site."""
+
+    active_tunnels: int
+    requests_24h: int
+    relay_status: Literal["operational", "degraded", "down"]
+    updated_at: str

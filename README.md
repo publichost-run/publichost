@@ -51,6 +51,22 @@ ssh -R 0:localhost:3000 -p 2222 localhost
 | `PUBLICHOST_DATABASE_URL` | PostgreSQL URL for the API | `postgresql+asyncpg://...` |
 | `PUBLICHOST_API_HOST` | FastAPI bind address | `0.0.0.0` |
 | `PUBLICHOST_API_PORT` | FastAPI port | `8000` |
+| `PUBLICHOST_HEARTBEAT_INTERVAL_SECONDS` | Relay-liveness heartbeat interval | `10` |
+| `PUBLICHOST_INSTANCE_ID` | Relay id in the heartbeat payload | hostname |
+| `PUBLICHOST_CLI_LATEST_VERSION` | Latest published CLI version | `1.0.0` |
+| `PUBLICHOST_CLI_MIN_SUPPORTED_VERSION` | Oldest supported CLI version | `1.0.0` |
+| `PUBLICHOST_CLI_RELEASED_AT` | Latest CLI release date | `` |
+| `PUBLICHOST_CLI_RELEASE_URL` | Latest CLI release page URL | `` |
+| `PUBLICHOST_CLI_INSTALL_COMMAND` | CLI install command shown to clients | `` |
+| `PUBLICHOST_STATS_CACHE_SECONDS` | Cache TTL for `/api/v1/stats` | `5` |
+| `PUBLICHOST_CORS_ORIGINS` | Allowed CORS origins for public endpoints | `https://publichost.io,https://www.publichost.io` |
+
+## Public API
+
+Two unauthenticated public endpoints are served by the API: `GET
+/api/v1/cli/version` (CLI release metadata) and `GET /api/v1/stats` (aggregate
+service stats). The client CLI lives in `cli/` as a separate `publichost-cli`
+distribution with its own venv — never install it into the backend's `.venv`.
 
 ## Development
 

@@ -49,6 +49,20 @@ def test_bind_listener_stores_port_and_release_clears_it():
     assert len(registry) == 0
 
 
+def test_active_tunnel_count_tracks_bound_and_live_tunnels():
+    registry = Registry("publichost.me")
+    domain, _token = registry.acquire()
+    # Acquired but no listener bound yet -> not counted.
+    assert registry.active_tunnel_count == 0
+    registry.bind_listener(domain, 12345)
+    assert registry.active_tunnel_count == 1
+    # Once expired/closed it drops back to zero even with a bound listener.
+    registry.set_status(domain, "expired")
+    assert registry.active_tunnel_count == 0
+    registry.set_status(domain, "closed")
+    assert registry.active_tunnel_count == 0
+
+
 def test_bind_listener_for_unknown_domain_raises():
     registry = Registry("publichost.me")
     with pytest.raises(KeyError):

@@ -9,6 +9,13 @@ from typing import Any
 
 import redis.asyncio as redis
 
+from .stats import (
+    RELAY_HEARTBEAT_KEY,
+    RELAY_HEARTBEAT_TTL_SECONDS,
+    REQUEST_BUCKET_TTL_SECONDS,
+    request_bucket_key,
+)
+
 logger = logging.getLogger(__name__)
 
 TUNNEL_CHANNEL = "publichost:tunnels"
@@ -90,6 +97,33 @@ class EventPublisher:
         }
         try:
             data = json.dumps(payload)
-            await self._client.publish(LOGS_CHANNEL, data)
+            # Ride a single pipelined round-trip: publish the log event and
+            # bump the hourly request counter without adding awaits to the
+            # proxy's hot path.
+            bucket_key = request_bucket_key(datetime.now(UTC))
+            pipe = self._client.pipeline(transaction=False)
+            pipe.publish(LOGS_CHANNEL, data)
+            pipe.incr(bucket_key)
+            # nx=True: set the TTL only when the bucket key is first created, so
+            # a hot bucket's expiry is not needlessly pushed out on every hit.
+            pipe.expire(bucket_key, REQUEST_BUCKET_TTL_SECONDS, nx=True)
+            await pipe.execute()
         except redis.RedisError as exc:
             logger.warning("Failed to publish log event: %s", exc)
+
+    async def write_relay_heartbeat(self, active_tunnels: int, instance: str) -> None:
+        """Write a periodic liveness/activity heartbeat for the public stats API."""
+        if self._client is None:
+            return
+        payload = {
+            "ts": datetime.now(UTC).isoformat(),
+            "active_tunnels": active_tunnels,
+            "instance": instance,
+        }
+        try:
+            data = json.dumps(payload)
+            await self._client.set(
+                RELAY_HEARTBEAT_KEY, data, ex=RELAY_HEARTBEAT_TTL_SECONDS
+            )
+        except redis.RedisError as exc:
+            logger.warning("Failed to write relay heartbeat: %s", exc)

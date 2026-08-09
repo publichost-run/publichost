@@ -34,6 +34,10 @@ class Settings(CommonSettings):
         PUBLICHOST_MAX_EXTEND_MINUTES: max minutes a single `extend` command may add.
         PUBLICHOST_MAX_TOTAL_LIFETIME_MINUTES: max total lifetime (initial + all
             extends) a tunnel may reach.
+        PUBLICHOST_HEARTBEAT_INTERVAL_SECONDS: interval for publishing the relay
+            liveness heartbeat.
+        PUBLICHOST_INSTANCE_ID: identifier for this relay instance in heartbeats
+            (empty string resolves to the hostname at the call site).
     """
 
     base_domain: str = "publichost.run"
@@ -51,6 +55,8 @@ class Settings(CommonSettings):
     max_header_bytes: int = 16384
     max_extend_minutes: int = 120
     max_total_lifetime_minutes: int = 1440
+    heartbeat_interval_seconds: int = 10
+    instance_id: str = ""
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -103,4 +109,16 @@ class Settings(CommonSettings):
                     cls.max_total_lifetime_minutes,
                 )
             ),
+            # Clamp to a sane minimum so a misconfigured 0/negative value cannot
+            # turn run_heartbeat's loop into a tight Redis-hammering busy-loop.
+            heartbeat_interval_seconds=max(
+                1,
+                int(
+                    os.environ.get(
+                        "PUBLICHOST_HEARTBEAT_INTERVAL_SECONDS",
+                        cls.heartbeat_interval_seconds,
+                    )
+                ),
+            ),
+            instance_id=os.environ.get("PUBLICHOST_INSTANCE_ID", cls.instance_id),
         )
