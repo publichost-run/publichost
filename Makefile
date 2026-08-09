@@ -1,5 +1,6 @@
 .PHONY: help \
   local-install local-run local-test local-lint local-format local-api local-worker local-beat \
+  cli-install cli-test cli-lint \
   prod-deploy prod-up prod-down prod-logs prod-ps prod-pull prod-nginx-reload
 
 HOST ?= publichost.run
@@ -10,6 +11,7 @@ SSH := ssh -p $(SSH_PORT) $(SSH_USER)@$(HOST)
 
 help:
 	@echo "Local:  local-install local-run local-test local-lint local-format local-api local-worker local-beat"
+	@echo "CLI:    cli-install cli-test cli-lint"
 	@echo "Prod:   prod-deploy prod-up prod-down prod-logs prod-ps prod-pull prod-nginx-reload"
 
 local-install:
@@ -35,6 +37,15 @@ local-worker:
 
 local-beat:
 	uv run publichost-beat
+
+cli-install:
+	cd cli && uv sync
+
+cli-test:
+	cd cli && uv run pytest -q
+
+cli-lint:
+	cd cli && uv run ruff check .
 
 prod-deploy:
 	$(SSH) "cd $(REMOTE_PATH) && git pull && docker compose down && docker compose up -d --build"

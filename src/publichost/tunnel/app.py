@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 from typing import NoReturn
 
 import asyncssh
@@ -12,6 +13,7 @@ from dotenv import load_dotenv
 
 from ..common.events import EventPublisher
 from .config import Settings
+from .heartbeat import run_heartbeat
 from .hostkey import ensure_host_key
 from .proxy import HttpProxy
 from .registry import Registry
@@ -89,6 +91,7 @@ async def _run(settings: Settings) -> None:
     try:
         registry = Registry(settings.base_domain, settings.default_lifetime_minutes)
         connections: dict[str, asyncssh.SSHServerConnection] = {}
+        instance = settings.instance_id or socket.gethostname()
         # return_exceptions=True so that a failure in one long-running task
         # (e.g. the expiry monitor) does not cancel the SSH server and HTTP
         # proxy along with it.
@@ -100,6 +103,12 @@ async def _run(settings: Settings) -> None:
                 connections,
                 settings.expire_check_interval_seconds,
                 publisher,
+            ),
+            run_heartbeat(
+                registry,
+                publisher,
+                settings.heartbeat_interval_seconds,
+                instance,
             ),
             return_exceptions=True,
         )

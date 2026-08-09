@@ -44,11 +44,13 @@ src/publichost/
   common/         # shared by both services
     config.py     # CommonSettings: PUBLICHOST_REDIS_URL, PUBLICHOST_WEBLOGS_PATH
     events.py     # Redis event publisher (EventPublisher)
+    stats.py      # shared aggregation for the public /api/v1/stats endpoint
   tunnel/         # service 1: SSH server + HTTP reverse proxy
     __main__.py   # entry point: python -m publichost.tunnel
     app.py        # composition root: starts SSH server, proxy, expiry monitor
     config.py     # Settings(CommonSettings): PUBLICHOST_SSH_*, HTTP_*, lifetime
     hostkey.py    # ensure_host_key: generate/load the SSH host key
+    heartbeat.py  # periodic relay-liveness heartbeat written to Redis
     registry.py   # Registry: subdomain assignment/release + tunnel port/lifetime
     server.py     # PublicHostSSHServer (asyncssh): auth, remote forwarding only
     session.py    # BannerSession: banner + `extend`/`help`/`exit` commands
@@ -60,7 +62,9 @@ src/publichost/
     models.py     # SQLAlchemy models
     db.py         # async engine/session
     consumer.py   # Redis pub/sub consumer, persists tunnel events to Postgres
-    routers/weblogs.py  # WebSocket /channel/weblogs?token=
+    routers/weblogs.py      # WebSocket /channel/weblogs?token=
+    routers/cli_release.py  # public GET /api/v1/cli/version (CLI release metadata)
+    routers/stats.py        # public GET /api/v1/stats (cached service stats)
     celery/
       app.py      # Celery app (task name: publichost.cleanup_expired_tunnels)
       tasks.py    # Celery tasks
@@ -76,11 +80,33 @@ Environment variables for the SSH/proxy server: `PUBLICHOST_BASE_DOMAIN`,
 `PUBLICHOST_SSH_PORT`, `PUBLICHOST_HOST_KEY_PATH`, `PUBLICHOST_HTTP_HOST`,
 `PUBLICHOST_HTTP_PORT`, `PUBLICHOST_DEFAULT_LIFETIME_MINUTES`,
 `PUBLICHOST_EXPIRE_CHECK_INTERVAL_SECONDS`, `PUBLICHOST_REDIS_URL`,
-`PUBLICHOST_WEBLOGS_PATH` (see docstring in `config.py`).
+`PUBLICHOST_WEBLOGS_PATH`, `PUBLICHOST_HEARTBEAT_INTERVAL_SECONDS` (relay
+heartbeat interval, default `10`), `PUBLICHOST_INSTANCE_ID` (relay id in the
+heartbeat payload, falls back to hostname) (see docstring in `config.py`).
 
 Environment variables for the API: `PUBLICHOST_DATABASE_URL`,
 `PUBLICHOST_REDIS_URL`, `PUBLICHOST_WEBLOGS_PATH`, `PUBLICHOST_API_HOST`,
-`PUBLICHOST_API_PORT` (see `src/publichost/api/config.py`).
+`PUBLICHOST_API_PORT`, `PUBLICHOST_CLI_LATEST_VERSION` (default `1.0.0`),
+`PUBLICHOST_CLI_MIN_SUPPORTED_VERSION` (default `1.0.0`),
+`PUBLICHOST_CLI_RELEASED_AT`, `PUBLICHOST_CLI_RELEASE_URL`,
+`PUBLICHOST_CLI_INSTALL_COMMAND`, `PUBLICHOST_STATS_CACHE_SECONDS` (in-process
+cache TTL for `/api/v1/stats`, default `5`), `PUBLICHOST_CORS_ORIGINS`
+(comma-separated allowed origins for the public REST endpoints, default
+`https://publichost.io,https://www.publichost.io`) (see
+`src/publichost/api/config.py`).
+
+Public API endpoints: `GET /api/v1/cli/version` and `GET /api/v1/stats` are the
+only unauthenticated public HTTP endpoints on the API. They serve CLI release
+metadata and aggregate service stats respectively, are CORS-restricted to
+`PUBLICHOST_CORS_ORIGINS`, and rate-limited by the host nginx (see
+`deploy/nginx.api.conf.example`).
+
+The CLI lives in `cli/` and is a **separate Python distribution**
+(`publichost-cli`) with its own virtualenv and lock file. It must never be
+installed into the backend's root `.venv`: both distributions expose a console
+script literally named `publichost` (backend: the SSH server daemon; CLI: the
+client), so installing them together collides. Build/test the CLI via its own
+`cli/` venv (see the `cli-*` Makefile targets).
 
 Environment files:
 - `.env.example` — template for local development; copy to `.env`.
