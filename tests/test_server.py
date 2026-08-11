@@ -65,6 +65,43 @@ async def test_client_is_assigned_a_subdomain():
             assert await wait_for(lambda: len(registry) == 1)
 
 
+async def test_ctrl_c_over_a_real_pty_closes_the_tunnel():
+    """Every real interactive ssh client requests a PTY, which makes asyncssh
+    wrap the session in its built-in line editor. The line editor intercepts
+    Ctrl+C (0x03) itself and calls session.break_received() instead of ever
+    forwarding the raw byte through data_received() -- so a fix that only
+    patches data_received (as verified by tests that call the session object
+    directly, bypassing asyncssh's real client/server stack and PTY handling
+    entirely) never actually reaches a real user pressing Ctrl+C.
+
+    This drives a real asyncssh client and server end to end with a PTY
+    requested, exactly like a real terminal does, to catch that gap.
+    """
+    registry = Registry("publichost.test")
+    async with running_server(registry) as server:
+        port = server.get_port()
+        async with asyncssh.connect("127.0.0.1", port, known_hosts=None) as conn:
+            proc = await conn.create_process(term_type="ansi")
+            banner = await asyncio.wait_for(proc.stdout.read(4096), timeout=2.0)
+            assert "Ctrl+C" in banner
+
+            proc.stdin.write("\x03")
+            await proc.stdin.drain()
+
+            # The session channel must close on its own -- this is the actual
+            # bug: break_received previously did nothing, so this hung until
+            # timeout instead.
+            await asyncio.wait_for(proc.wait_closed(), timeout=2.0)
+
+            # A real ssh client disconnects once its only channel is gone;
+            # asyncssh's client library leaves that to the caller, so do it
+            # explicitly to reach the same connection_lost -> registry
+            # release the CLI's real disconnect would trigger.
+            conn.close()
+            await conn.wait_closed()
+            assert await wait_for(lambda: len(registry) == 0)
+
+
 async def test_subdomain_is_released_on_disconnect():
     registry = Registry("publichost.test")
     async with running_server(registry) as server:

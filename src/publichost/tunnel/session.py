@@ -103,6 +103,28 @@ class BannerSession(asyncssh.SSHServerSession):
         )
         return True
 
+    def break_received(self, msec: int) -> bool:
+        """Handle a terminal break request.
+
+        Every real interactive ssh client requests a PTY, which makes
+        asyncssh wrap this session in its built-in line editor. The line
+        editor intercepts a Ctrl+C keypress itself and delivers it here
+        instead of as a raw byte through data_received -- so this is the
+        path a real user's Ctrl+C actually takes (data_received's "\\x03"
+        handling below only fires for non-PTY / non-line-editor sessions).
+        The banner promises "Press Ctrl+C to stop", so treat it the same
+        as typing `exit`.
+        """
+        self._handle_ctrl_c()
+        return True
+
+    def _handle_ctrl_c(self) -> None:
+        if self._chan is None:
+            return
+        self._chan.write("^C\r\n")
+        self._input_buffer = ""
+        self._handle_command("exit")
+
     def data_received(self, data: str, datatype: asyncssh.DataType) -> None:
         """Handle user input typed into the shell."""
         # asyncssh sends regular shell input with datatype None and stderr as
@@ -111,16 +133,13 @@ class BannerSession(asyncssh.SSHServerSession):
             return
         if self._chan is None:
             return
-        # This session has no real PTY line discipline, so a Ctrl+C keypress
-        # arrives as a literal ETX (0x03) byte rather than a SIGINT the way
-        # it would against a real remote shell. The banner promises "Press
-        # Ctrl+C to stop", so treat it the same as typing `exit`, discarding
-        # whatever partial line preceded it (matching normal shell behavior
-        # of ^C cancelling the current input line).
+        # Without a PTY / line editor (e.g. a non-interactive client), a
+        # Ctrl+C keypress arrives as a literal ETX (0x03) byte rather than
+        # going through break_received above. Discard whatever partial line
+        # preceded it, matching normal shell behavior of ^C cancelling the
+        # current input line.
         if "\x03" in data:
-            self._chan.write("^C\r\n")
-            self._input_buffer = ""
-            self._handle_command("exit")
+            self._handle_ctrl_c()
             return
         # Echo input back to the client.
         self._chan.write(data)
