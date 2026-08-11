@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import NoReturn
+from typing import NamedTuple, NoReturn
 
 from ..common.events import EventPublisher
 from .registry import Registry
@@ -326,6 +326,21 @@ def _decode_body(body: bytes) -> str:
         return body.decode("latin-1")
 
 
+class _Backend(NamedTuple):
+    """A backend connection kept open for reuse across keep-alive requests.
+
+    Opening a new backend connection means opening a new SSH forwarded-tcpip
+    channel, which round-trips to the client's machine. Reopening one per
+    request (instead of reusing it like the client-facing connection) turns
+    every asset on a request-heavy dev server (Vite/webpack/Next.js) into a
+    full network round trip, which is the dominant cost for those pages.
+    """
+
+    reader: asyncio.StreamReader
+    writer: asyncio.StreamWriter
+    host: str
+
+
 class HttpProxy:
     """Routes incoming HTTP requests to tunnel listeners by Host header."""
 
@@ -365,12 +380,17 @@ class HttpProxy:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         peer = writer.get_extra_info("peername")
+        backend: _Backend | None = None
         try:
             while True:
-                keep_alive = await self._handle_request(reader, writer, peer)
+                keep_alive, backend = await self._handle_request(
+                    reader, writer, peer, backend
+                )
                 if not keep_alive:
                     break
         finally:
+            if backend is not None:
+                await _safe_close(backend.writer)
             await _safe_close(writer)
 
     async def _handle_request(
@@ -378,8 +398,14 @@ class HttpProxy:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         peer: object,
-    ) -> bool:
-        """Handle a single request/response pair. Returns True to keep the conn."""
+        backend: _Backend | None,
+    ) -> tuple[bool, _Backend | None]:
+        """Handle a single request/response pair.
+
+        Returns (keep_alive, backend): whether the client connection (and its
+        reusable backend connection, if any) should stay open for another
+        request.
+        """
         started_at = time.perf_counter()
 
         try:
@@ -388,29 +414,29 @@ class HttpProxy:
             )
         except TimeoutError:
             logger.debug("Timeout reading headers from %s", peer)
-            return False
+            return False, backend
         except asyncio.IncompleteReadError:
             # Clean EOF or a partial header block: the client is gone.
-            return False
+            return False, backend
         except asyncio.LimitOverrunError:
             # Header flood: more than max_header_bytes buffered with no terminator.
             logger.debug("Header block over limit from %s", peer)
             writer.write(b"HTTP/1.1 431 Request Header Fields Too Large\r\n\r\n")
             await writer.drain()
-            return False
+            return False, backend
 
         host = _parse_host(header_data)
         method_path = _parse_request_line(header_data)
         if host is None or method_path is None:
             writer.write(b"HTTP/1.1 400 Bad Request\r\n\r\n")
             await writer.drain()
-            return False
+            return False, backend
 
         if _framing_is_ambiguous(header_data):
             logger.debug("Ambiguous request framing from %s", peer)
             writer.write(b"HTTP/1.1 400 Bad Request\r\n\r\n")
             await writer.drain()
-            return False
+            return False, backend
 
         method, path = method_path
         listen_port = self._registry.get_listener_port(host)
@@ -418,28 +444,41 @@ class HttpProxy:
             logger.info("No tunnel for host %s", host)
             writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
             await writer.drain()
-            return False
+            return False, backend
 
         # Capture tunnel metadata early so logging survives a connection drop.
         tunnel_info = self._registry.get_info(host)
         tunnel_token = tunnel_info.token if tunnel_info else None
 
-        try:
-            backend_reader, backend_writer = await asyncio.open_connection(
-                _PROXY_BACKEND_HOST, listen_port, limit=self._max_header_bytes
-            )
-        except OSError as exc:
-            logger.warning("Cannot connect to tunnel %s:%d: %s", host, listen_port, exc)
-            writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
-            await writer.drain()
-            return False
+        # Reuse the existing backend connection when it still targets the same
+        # tunnel and hasn't been torn down; each new one costs a full SSH
+        # forwarded-tcpip channel open round trip to the client's machine.
+        if backend is not None and (
+            backend.host != host or backend.writer.is_closing()
+        ):
+            await _safe_close(backend.writer)
+            backend = None
+
+        if backend is None:
+            try:
+                backend_reader, backend_writer = await asyncio.open_connection(
+                    _PROXY_BACKEND_HOST, listen_port, limit=self._max_header_bytes
+                )
+            except OSError as exc:
+                logger.warning(
+                    "Cannot connect to tunnel %s:%d: %s", host, listen_port, exc
+                )
+                writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+                await writer.drain()
+                return False, None
+            backend = _Backend(backend_reader, backend_writer, host)
 
         try:
-            return await self._proxy_exchange(
+            keep_alive = await self._proxy_exchange(
                 reader,
                 writer,
-                backend_reader,
-                backend_writer,
+                backend.reader,
+                backend.writer,
                 started_at,
                 host,
                 method,
@@ -447,8 +486,15 @@ class HttpProxy:
                 header_data,
                 tunnel_token,
             )
-        finally:
-            await _safe_close(backend_writer)
+        except Exception:
+            await _safe_close(backend.writer)
+            raise
+
+        if not keep_alive:
+            await _safe_close(backend.writer)
+            backend = None
+
+        return keep_alive, backend
 
     async def _proxy_exchange(
         self,
