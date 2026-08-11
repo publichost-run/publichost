@@ -155,10 +155,17 @@ async def test_keepalive_logs_each_request_with_status_and_latency():
     async def handler(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        # Serve exactly one request per (per-request) backend connection.
-        await reader.readuntil(b"\r\n\r\n")
-        writer.write(b"HTTP/1.1 201 Created\r\nContent-Length: 3\r\n\r\nabc")
-        await writer.drain()
+        # A real HTTP/1.1 backend keeps serving requests on one connection
+        # until the client goes away; the proxy is expected to reuse its
+        # backend connection the same way, so this loops instead of closing
+        # after a single request.
+        while True:
+            try:
+                await reader.readuntil(b"\r\n\r\n")
+            except asyncio.IncompleteReadError:
+                break
+            writer.write(b"HTTP/1.1 201 Created\r\nContent-Length: 3\r\n\r\nabc")
+            await writer.drain()
         writer.close()
 
     async with _backend(registry, handler) as domain:
@@ -200,6 +207,88 @@ async def test_keepalive_logs_each_request_with_status_and_latency():
     assert [e["method"] for e in capture.events] == ["GET", "POST"]
     # Per-request latency, not whole-connection lifetime.
     assert all(e["latency_ms"] >= 0 for e in capture.events)
+
+
+# --- Backend connection reuse -------------------------------------------------
+
+
+async def test_keepalive_client_reuses_one_backend_connection():
+    """Multiple requests on a keep-alive client connection must share one
+    backend connection instead of opening a new one per request.
+
+    Each backend connection maps to an SSH forwarded-tcpip channel, whose
+    open handshake round-trips to the tunnel client's machine. Opening a
+    fresh one per request turns every asset on a request-heavy dev server
+    into a full network round trip.
+    """
+    registry = Registry("publichost.test")
+    accepted_connections = 0
+
+    async def handler(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        nonlocal accepted_connections
+        accepted_connections += 1
+        while True:
+            try:
+                await reader.readuntil(b"\r\n\r\n")
+            except asyncio.IncompleteReadError:
+                break
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+            await writer.drain()
+        writer.close()
+
+    async with _backend(registry, handler) as domain:
+        async with _running_proxy(registry) as proxy_port:
+            reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+
+            for path in ("/one", "/two", "/three"):
+                writer.write(f"GET {path} HTTP/1.1\r\nHost: {domain}\r\n\r\n".encode())
+                await writer.drain()
+                resp = await asyncio.wait_for(
+                    reader.readexactly(
+                        len(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                    ),
+                    timeout=5,
+                )
+                assert b"200 OK" in resp
+
+            writer.close()
+            await writer.wait_closed()
+
+    assert accepted_connections == 1
+
+
+async def test_connection_close_does_not_reuse_the_backend_connection():
+    """A `Connection: close` request must not have its backend socket reused."""
+    registry = Registry("publichost.test")
+    accepted_connections = 0
+
+    async def handler(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        nonlocal accepted_connections
+        accepted_connections += 1
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+        await writer.drain()
+        writer.close()
+
+    async with _backend(registry, handler) as domain:
+        async with _running_proxy(registry) as proxy_port:
+            for _ in range(2):
+                reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+                writer.write(
+                    f"GET / HTTP/1.1\r\nHost: {domain}\r\n"
+                    f"Connection: close\r\n\r\n".encode()
+                )
+                await writer.drain()
+                resp = await asyncio.wait_for(reader.read(4096), timeout=5)
+                assert b"200 OK" in resp
+                writer.close()
+                await writer.wait_closed()
+
+    assert accepted_connections == 2
 
 
 async def test_published_headers_are_redacted():
