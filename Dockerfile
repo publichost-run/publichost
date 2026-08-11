@@ -25,7 +25,9 @@ COPY --from=builder /app/.venv /app/.venv
 # /data holds the SSH host key (mounted as a volume in compose).
 # /app/weblogs holds WebLogs CSV files (mounted as a volume in compose).
 # Named volumes inherit this ownership on first mount.
-RUN mkdir -p /data /app/weblogs && chown app:app /data /app/weblogs
+# /app itself must be owned by app too: celery beat's default schedule file
+# (celerybeat-schedule) is written relative to the CWD, which is /app.
+RUN mkdir -p /data /app/weblogs && chown app:app /data /app /app/weblogs
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PUBLICHOST_SSH_HOST=0.0.0.0 \
