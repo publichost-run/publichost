@@ -17,7 +17,12 @@ from .heartbeat import run_heartbeat
 from .hostkey import ensure_host_key
 from .proxy import HttpProxy
 from .registry import Registry
-from .server import ConnectionTracker, PublicHostSSHServer, close_expired_tunnels
+from .server import (
+    ConnectionTracker,
+    PublicHostSSHServer,
+    TunnelTracker,
+    close_expired_tunnels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +33,7 @@ def _server_factory(
     connections: dict[str, asyncssh.SSHServerConnection],
     publisher: EventPublisher,
     tracker: ConnectionTracker,
+    tunnel_tracker: TunnelTracker,
 ) -> PublicHostSSHServer:
     """Factory that injects shared registry, connection tracker and publisher.
 
@@ -41,6 +47,7 @@ def _server_factory(
         publisher,
         connections=connections,
         tracker=tracker,
+        tunnel_tracker=tunnel_tracker,
     )
 
 
@@ -53,8 +60,11 @@ async def run_server(
     """Start the SSH server and run it forever."""
     host_key = ensure_host_key(settings.host_key_path)
     tracker = ConnectionTracker()
+    tunnel_tracker = TunnelTracker()
     await asyncssh.create_server(
-        lambda: _server_factory(registry, settings, connections, publisher, tracker),
+        lambda: _server_factory(
+            registry, settings, connections, publisher, tracker, tunnel_tracker
+        ),
         settings.ssh_host,
         settings.ssh_port,
         server_host_keys=[host_key],

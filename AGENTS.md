@@ -14,8 +14,9 @@ session with HTTPS URL and WebLogs link, `ssh -R 0:localhost:<port>`, HTTP
 reverse proxy by `Host` header, automatic tunnel lifetime (default 2 hours),
 `extend <minutes>` command, Redis-based event publishing, FastAPI backend with
 PostgreSQL persistence, WebLogs via WebSocket + CSV files, and Celery cleanup
-tasks. Not yet implemented: abuse protection and multiple tunnels per
-connection.
+tasks. Abuse protection is implemented: per-IP and server-wide connection
+limits, plus a per-IP concurrent-tunnel cap (`PUBLICHOST_MAX_TUNNELS_PER_IP`).
+Not yet implemented: multiple tunnels per single connection.
 
 ## Stack
 
@@ -80,9 +81,11 @@ Environment variables for the SSH/proxy server: `PUBLICHOST_BASE_DOMAIN`,
 `PUBLICHOST_SSH_PORT`, `PUBLICHOST_HOST_KEY_PATH`, `PUBLICHOST_HTTP_HOST`,
 `PUBLICHOST_HTTP_PORT`, `PUBLICHOST_DEFAULT_LIFETIME_MINUTES`,
 `PUBLICHOST_EXPIRE_CHECK_INTERVAL_SECONDS`, `PUBLICHOST_REDIS_URL`,
-`PUBLICHOST_WEBLOGS_PATH`, `PUBLICHOST_HEARTBEAT_INTERVAL_SECONDS` (relay
-heartbeat interval, default `10`), `PUBLICHOST_INSTANCE_ID` (relay id in the
-heartbeat payload, falls back to hostname) (see docstring in `config.py`).
+`PUBLICHOST_WEBLOGS_PATH`, `PUBLICHOST_MAX_TUNNELS_PER_IP` (max concurrent
+remote-forward tunnels per client IP, clamped to a minimum of `1`, default
+`2`), `PUBLICHOST_HEARTBEAT_INTERVAL_SECONDS` (relay heartbeat interval,
+default `10`), `PUBLICHOST_INSTANCE_ID` (relay id in the heartbeat payload,
+falls back to hostname) (see docstring in `config.py`).
 
 Environment variables for the API: `PUBLICHOST_DATABASE_URL`,
 `PUBLICHOST_REDIS_URL`, `PUBLICHOST_WEBLOGS_PATH`, `PUBLICHOST_API_HOST`,
@@ -143,8 +146,9 @@ Environment files:
    subdomain in `Registry`.~~ ✅ Implemented.
 2. ~~**HTTP reverse proxy**: listen on 8080, route by `Host: <label>.publichost.run`
    header to the correct tunnel.~~ ✅ Implemented.
-3. **Abuse protection**: rate limit connections by IP, limit tunnels per
-   connection.
+3. **Abuse protection**: per-IP and server-wide connection limits and a per-IP
+   concurrent-tunnel cap (`PUBLICHOST_MAX_TUNNELS_PER_IP`) are ✅ implemented;
+   supporting multiple tunnels per single connection is still pending.
 
 ## Deployment (Docker)
 

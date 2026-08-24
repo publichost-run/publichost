@@ -65,6 +65,46 @@ class ConnectionTracker:
             self._total -= 1
 
 
+class TunnelTracker:
+    """Counts active remote-forward tunnels per source IP.
+
+    Unlike ``ConnectionTracker``, this counts only connections that have
+    successfully opened a remote forward. It is checked in
+    ``server_requested`` to enforce ``max_tunnels_per_ip``.
+
+    ``try_add`` reserves a slot atomically (relative to the asyncio event
+    loop) so two concurrent ``server_requested`` calls for the same IP cannot
+    both pass the limit. The caller must call ``remove`` to release the slot
+    if the forward is ultimately not established.
+    """
+
+    def __init__(self) -> None:
+        self._per_ip: dict[str, int] = {}
+
+    def count_for(self, ip: str) -> int:
+        return self._per_ip.get(ip, 0)
+
+    def try_add(self, ip: str, max_count: int) -> bool:
+        """Increment the counter for ``ip`` if it is below ``max_count``.
+
+        Returns ``True`` when the slot was reserved. This method does not
+        await, so it is atomic with respect to other coroutines on the same
+        event loop.
+        """
+        current = self._per_ip.get(ip, 0)
+        if current >= max_count:
+            return False
+        self._per_ip[ip] = current + 1
+        return True
+
+    def remove(self, ip: str) -> None:
+        current = self._per_ip.get(ip, 0)
+        if current <= 1:
+            self._per_ip.pop(ip, None)
+        else:
+            self._per_ip[ip] = current - 1
+
+
 class PublicHostSSHServer(asyncssh.SSHServer):
     """Handles one client connection: assigns and releases its subdomain."""
 
@@ -76,12 +116,14 @@ class PublicHostSSHServer(asyncssh.SSHServer):
         *,
         connections: dict[str, asyncssh.SSHServerConnection] | None = None,
         tracker: ConnectionTracker | None = None,
+        tunnel_tracker: TunnelTracker | None = None,
     ) -> None:
         self._registry = registry
         self._settings = settings or Settings()
         self._publisher = publisher
         self._connections = connections
         self._tracker = tracker or ConnectionTracker()
+        self._tunnel_tracker = tunnel_tracker or TunnelTracker()
         self._domain: str | None = None
         self._token: str | None = None
         self._conn: asyncssh.SSHServerConnection | None = None
@@ -89,6 +131,7 @@ class PublicHostSSHServer(asyncssh.SSHServer):
         self._session: BannerSession | None = None
         self._peer_ip: str | None = None
         self._counted = False
+        self._tunnel_counted = False
 
     def _publish_tunnel(self, event: str, **kwargs: Any) -> None:
         if self._publisher is None or self._domain is None:
@@ -158,9 +201,13 @@ class PublicHostSSHServer(asyncssh.SSHServer):
         )
 
     def connection_lost(self, exc: Exception | None) -> None:
+        peer_ip = self._peer_ip or "unknown"
         if self._counted and self._peer_ip is not None:
             self._tracker.remove(self._peer_ip)
             self._counted = False
+        if self._tunnel_counted:
+            self._tunnel_tracker.remove(peer_ip)
+            self._tunnel_counted = False
         if self._domain is not None:
             reason = "expired" if self._is_expired() else "closed"
             self._publish_tunnel(f"tunnel.{reason}")
@@ -208,20 +255,49 @@ class PublicHostSSHServer(asyncssh.SSHServer):
             logger.info("Only ephemeral remote forwards are supported")
             return False
 
+        peer_ip = self._peer_ip or "unknown"
+        if not self._tunnel_tracker.try_add(peer_ip, self._settings.max_tunnels_per_ip):
+            logger.warning(
+                "Per-IP tunnel limit (%d) reached for %s, rejecting remote forward",
+                self._settings.max_tunnels_per_ip,
+                peer_ip,
+            )
+            return False
+
         # Force the server-side bind (first arg) to loopback and ignore the
         # attacker-controlled ``listen_host``. The proxy reaches the backend via
         # 127.0.0.1, so binding a public interface would only create an open TCP
         # relay. ``listen_host`` is still passed as the forwarded-tcpip connected
         # address (dest) so the client can match the channel to its own forward.
+        established = False
+        listener: asyncssh.SSHListener | None = None
         try:
             listener = await self._conn.forward_local_port(_LOOPBACK, 0, listen_host, 0)
-        except OSError as exc:
+            # connection_lost() can run while we await above (asyncssh services the
+            # tcpip-forward request in its own task and never cancels it on close),
+            # leaving us with a live listener on a dead connection.
+            if self._conn is None or self._domain is None:
+                logger.info("Connection closed while creating tunnel listener")
+                return False
+            port = listener.get_port()
+            self._registry.bind_listener(self._domain, port)
+            established = True
+        except Exception as exc:
             logger.warning("Failed to create tunnel listener: %s", exc)
             return False
+        finally:
+            if not established:
+                self._tunnel_tracker.remove(peer_ip)
+                if listener is not None:
+                    try:
+                        listener.close()
+                    except Exception:
+                        logger.warning(
+                            "Failed to close orphaned tunnel listener", exc_info=True
+                        )
 
-        port = listener.get_port()
-        self._registry.bind_listener(self._domain, port)
         self._forwarding_bound = True
+        self._tunnel_counted = True
         logger.info(
             "Tunnel for %s -> %s:%d -> client localhost",
             self._domain,

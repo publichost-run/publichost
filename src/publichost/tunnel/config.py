@@ -29,6 +29,9 @@ class Settings(CommonSettings):
             client IP.
         PUBLICHOST_MAX_TOTAL_CONNECTIONS: max concurrent raw SSH connections
             server-wide.
+        PUBLICHOST_MAX_TUNNELS_PER_IP: max concurrent active tunnels per client
+            IP (checked when a remote forward is requested). Clamped to a
+            minimum of 1.
         PUBLICHOST_MAX_HEADER_BYTES: max bytes allowed for a single HTTP
             request/response header block read by the proxy.
         PUBLICHOST_MAX_EXTEND_MINUTES: max minutes a single `extend` command may add.
@@ -52,6 +55,7 @@ class Settings(CommonSettings):
     expire_check_interval_seconds: int = 60
     max_connections_per_ip: int = 10
     max_total_connections: int = 500
+    max_tunnels_per_ip: int = 2
     max_header_bytes: int = 16384
     max_extend_minutes: int = 120
     max_total_lifetime_minutes: int = 1440
@@ -96,6 +100,17 @@ class Settings(CommonSettings):
                 os.environ.get(
                     "PUBLICHOST_MAX_TOTAL_CONNECTIONS", cls.max_total_connections
                 )
+            ),
+            # Clamp to a sane minimum: a 0/negative value would silently reject
+            # every remote forward server-wide while SSH login itself still
+            # succeeds -- a confusing failure mode.
+            max_tunnels_per_ip=max(
+                1,
+                int(
+                    os.environ.get(
+                        "PUBLICHOST_MAX_TUNNELS_PER_IP", cls.max_tunnels_per_ip
+                    )
+                ),
             ),
             max_header_bytes=int(
                 os.environ.get("PUBLICHOST_MAX_HEADER_BYTES", cls.max_header_bytes)
