@@ -16,6 +16,7 @@ from publichost.tunnel.registry import Registry
 from publichost.tunnel.server import (
     ConnectionTracker,
     PublicHostSSHServer,
+    TunnelTracker,
     close_expired_tunnels,
 )
 
@@ -189,17 +190,26 @@ class _RecordingConn:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, int, str, int]] = []
+        self.listeners: list[_FakeListener] = []
 
     async def forward_local_port(
         self, listen_host: str, listen_port: int, dest_host: str, dest_port: int
     ) -> "_FakeListener":
         self.calls.append((listen_host, listen_port, dest_host, dest_port))
-        return _FakeListener()
+        listener = _FakeListener()
+        self.listeners.append(listener)
+        return listener
 
 
 class _FakeListener:
+    def __init__(self) -> None:
+        self.closed = False
+
     def get_port(self) -> int:
         return 54321
+
+    def close(self) -> None:
+        self.closed = True
 
 
 async def test_remote_forward_always_binds_loopback():
@@ -221,6 +231,227 @@ async def test_remote_forward_always_binds_loopback():
     assert len(fake_conn.calls) == 1
     bind_host = fake_conn.calls[0][0]
     assert bind_host == "127.0.0.1"
+    # Regression guard: the listener must never be closed on the success path.
+    assert fake_conn.listeners[0].closed is False
+
+
+def test_tunnel_tracker_counts_per_ip():
+    tracker = TunnelTracker()
+    assert tracker.count_for("1.2.3.4") == 0
+    assert tracker.try_add("1.2.3.4", 10) is True
+    assert tracker.try_add("1.2.3.4", 10) is True
+    assert tracker.count_for("1.2.3.4") == 2
+    assert tracker.try_add("1.2.3.4", 2) is False
+    tracker.remove("1.2.3.4")
+    assert tracker.count_for("1.2.3.4") == 1
+    tracker.remove("1.2.3.4")
+    assert tracker.count_for("1.2.3.4") == 0
+    tracker.remove("1.2.3.4")
+    assert tracker.count_for("1.2.3.4") == 0
+
+
+async def test_per_ip_tunnel_limit_rejects_excess():
+    registry = Registry("publichost.test")
+    settings = Settings(base_domain="publichost.test", max_tunnels_per_ip=2)
+    tunnel_tracker = TunnelTracker()
+
+    async def make_server(peer_ip: str) -> PublicHostSSHServer:
+        server = PublicHostSSHServer(registry, settings, tunnel_tracker=tunnel_tracker)
+        domain, token = registry.acquire()
+        server._domain = domain
+        server._token = token
+        server._peer_ip = peer_ip
+        server._conn = _RecordingConn()  # type: ignore[assignment]
+        return server
+
+    first = await make_server("10.0.0.1")
+    second = await make_server("10.0.0.1")
+    other = await make_server("10.0.0.2")
+
+    assert await first.server_requested("127.0.0.1", 0) is not False
+    assert await second.server_requested("127.0.0.1", 0) is not False
+    assert tunnel_tracker.count_for("10.0.0.1") == 2
+
+    third = await make_server("10.0.0.1")
+    assert await third.server_requested("127.0.0.1", 0) is False
+    assert tunnel_tracker.count_for("10.0.0.1") == 2
+
+    assert await other.server_requested("127.0.0.1", 0) is not False
+    assert tunnel_tracker.count_for("10.0.0.2") == 1
+
+    first.connection_lost(None)
+    assert tunnel_tracker.count_for("10.0.0.1") == 1
+    assert await third.server_requested("127.0.0.1", 0) is not False
+    assert tunnel_tracker.count_for("10.0.0.1") == 2
+
+
+class _BoomConn:
+    """Stand-in for an SSHServerConnection whose forwards always fail."""
+
+    async def forward_local_port(
+        self, listen_host: str, listen_port: int, dest_host: str, dest_port: int
+    ) -> "_FakeListener":
+        raise OSError("no listener for you")
+
+
+class _CancelledConn:
+    """Stand-in whose forward is cancelled mid-flight."""
+
+    async def forward_local_port(
+        self, listen_host: str, listen_port: int, dest_host: str, dest_port: int
+    ) -> "_FakeListener":
+        raise asyncio.CancelledError("cancelled")
+
+
+async def test_tunnel_slot_rolled_back_on_forward_failure():
+    registry = Registry("publichost.test")
+    settings = Settings(base_domain="publichost.test", max_tunnels_per_ip=2)
+    tunnel_tracker = TunnelTracker()
+    server = PublicHostSSHServer(registry, settings, tunnel_tracker=tunnel_tracker)
+    domain, token = registry.acquire()
+    server._domain = domain
+    server._token = token
+    server._peer_ip = "10.0.0.1"
+    server._conn = _BoomConn()  # type: ignore[assignment]
+
+    assert tunnel_tracker.count_for("10.0.0.1") == 0
+    result = await server.server_requested("127.0.0.1", 0)
+    assert result is False
+    assert tunnel_tracker.count_for("10.0.0.1") == 0
+
+
+async def test_tunnel_slot_rolled_back_on_cancellation():
+    registry = Registry("publichost.test")
+    settings = Settings(base_domain="publichost.test", max_tunnels_per_ip=2)
+    tunnel_tracker = TunnelTracker()
+    server = PublicHostSSHServer(registry, settings, tunnel_tracker=tunnel_tracker)
+    domain, token = registry.acquire()
+    server._domain = domain
+    server._token = token
+    server._peer_ip = "10.0.0.1"
+    server._conn = _CancelledConn()  # type: ignore[assignment]
+
+    assert tunnel_tracker.count_for("10.0.0.1") == 0
+    with pytest.raises(asyncio.CancelledError):
+        await server.server_requested("127.0.0.1", 0)
+    assert tunnel_tracker.count_for("10.0.0.1") == 0
+
+
+async def test_listener_closed_when_bind_listener_fails():
+    # A non-OSError failure after the listener already exists (here bind_listener
+    # raising KeyError) must not leak the real asyncssh listener: it has to be
+    # closed on the rollback path, and no slot/flag may stay set.
+    registry = Registry("publichost.test")
+    settings = Settings(base_domain="publichost.test", max_tunnels_per_ip=2)
+    tunnel_tracker = TunnelTracker()
+    server = PublicHostSSHServer(registry, settings, tunnel_tracker=tunnel_tracker)
+    domain, token = registry.acquire()
+    server._domain = domain
+    server._token = token
+    server._peer_ip = "10.0.0.1"
+    conn = _RecordingConn()
+    server._conn = conn  # type: ignore[assignment]
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise KeyError("boom")
+
+    server._registry.bind_listener = _raise  # type: ignore[method-assign]
+
+    result = await server.server_requested("127.0.0.1", 0)
+
+    assert result is False
+    assert conn.listeners[0].closed is True
+    assert tunnel_tracker.count_for("10.0.0.1") == 0
+    assert server._forwarding_bound is False
+    assert server._tunnel_counted is False
+
+
+class _LostDuringForwardConn:
+    """Stand-in whose forward races connection_lost, modelling asyncssh's
+    real cleanup: the tcpip-forward request runs in its own task that is not
+    cancelled on close, so connection_lost can fire while forward_local_port is
+    still in flight and hand back a live listener on an already-dead connection.
+    """
+
+    def __init__(self, server: PublicHostSSHServer) -> None:
+        self._server = server
+        self.listeners: list[_FakeListener] = []
+
+    async def forward_local_port(
+        self, listen_host: str, listen_port: int, dest_host: str, dest_port: int
+    ) -> "_FakeListener":
+        # The yield is load-bearing: it is what lets connection_lost interleave
+        # in the real event loop before the listener is handed back.
+        await asyncio.sleep(0)
+        self._server.connection_lost(None)
+        listener = _FakeListener()
+        self.listeners.append(listener)
+        return listener
+
+
+async def test_listener_closed_when_connection_lost_during_forward():
+    # Models the actual race: the connection dies while we await the forward.
+    # The freshly created listener must be closed (asyncssh never registered it,
+    # so it would leak), the tunnel slot decremented exactly once, and the
+    # subdomain fully released.
+    registry = Registry("publichost.test")
+    settings = Settings(base_domain="publichost.test", max_tunnels_per_ip=2)
+    tunnel_tracker = TunnelTracker()
+    server = PublicHostSSHServer(registry, settings, tunnel_tracker=tunnel_tracker)
+    domain, token = registry.acquire()
+    server._domain = domain
+    server._token = token
+    server._peer_ip = "10.0.0.1"
+    conn = _LostDuringForwardConn(server)
+    server._conn = conn  # type: ignore[assignment]
+
+    result = await server.server_requested("127.0.0.1", 0)
+
+    assert result is False
+    assert conn.listeners[0].closed is True
+    # Exactly one decrement: double-decrementing would let clients exceed
+    # max_tunnels_per_ip.
+    assert tunnel_tracker.count_for("10.0.0.1") == 0
+    assert len(registry) == 0
+
+
+async def test_per_ip_tunnel_limit_via_ssh():
+    registry = Registry("publichost.test")
+    settings = Settings(
+        base_domain="publichost.test",
+        max_tunnels_per_ip=2,
+        max_connections_per_ip=100,
+        max_total_connections=500,
+    )
+    tunnel_tracker = TunnelTracker()
+
+    def factory() -> PublicHostSSHServer:
+        return PublicHostSSHServer(registry, settings, tunnel_tracker=tunnel_tracker)
+
+    async with running_server(registry, factory) as server:
+        port = server.get_port()
+        async with asyncssh.connect("127.0.0.1", port, known_hosts=None) as conn2:
+            async with asyncssh.connect("127.0.0.1", port, known_hosts=None) as conn1:
+                await conn1.forward_remote_port("", 0, "127.0.0.1", 12345)
+                await conn2.forward_remote_port("", 0, "127.0.0.1", 12346)
+                assert await wait_for(
+                    lambda: tunnel_tracker.count_for("127.0.0.1") == 2
+                )
+
+                async with asyncssh.connect(
+                    "127.0.0.1", port, known_hosts=None
+                ) as conn3:
+                    with pytest.raises(asyncssh.ChannelListenError):
+                        await conn3.forward_remote_port("", 0, "127.0.0.1", 12347)
+
+            # conn1 closed, freeing one tunnel slot.
+            assert await wait_for(lambda: tunnel_tracker.count_for("127.0.0.1") == 1)
+
+            async with asyncssh.connect("127.0.0.1", port, known_hosts=None) as conn4:
+                await conn4.forward_remote_port("", 0, "127.0.0.1", 12348)
+                assert await wait_for(
+                    lambda: tunnel_tracker.count_for("127.0.0.1") == 2
+                )
 
 
 class _BoomPublisher:
