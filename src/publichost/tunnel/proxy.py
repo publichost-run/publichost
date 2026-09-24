@@ -22,6 +22,10 @@ _SENSITIVE_HEADERS = frozenset(
 )
 _REDACTED = "[REDACTED]"
 
+# Methods that are safe to replay on a fresh backend connection when a reused
+# one turns out to be dead (same policy as nginx's proxy_next_upstream).
+_REPLAYABLE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
 
 def _first_line(header_block: bytes) -> str | None:
     """Return the decoded first line (request/status line) of a header block."""
@@ -341,6 +345,17 @@ class _Backend(NamedTuple):
     host: str
 
 
+class _StaleBackendError(Exception):
+    """A reused backend connection died before answering a replayable request.
+
+    Dev servers close idle keep-alive connections on their own (Node's default
+    ``keepAliveTimeout`` is 5s), so a reused backend can be dead by the time
+    the next request arrives. Raised only when nothing has been consumed from
+    the client beyond the header block and nothing has been sent back, so the
+    request can be replayed on a fresh backend connection.
+    """
+
+
 class HttpProxy:
     """Routes incoming HTTP requests to tunnel listeners by Host header."""
 
@@ -453,48 +468,80 @@ class HttpProxy:
         # Reuse the existing backend connection when it still targets the same
         # tunnel and hasn't been torn down; each new one costs a full SSH
         # forwarded-tcpip channel open round trip to the client's machine.
+        # at_eof() catches a backend that closed an idle keep-alive connection:
+        # the half-closed transport is not "closing" until we close it.
         if backend is not None and (
-            backend.host != host or backend.writer.is_closing()
+            backend.host != host
+            or backend.writer.is_closing()
+            or backend.reader.at_eof()
         ):
             await _safe_close(backend.writer)
             backend = None
 
+        reused = backend is not None
         if backend is None:
-            try:
-                backend_reader, backend_writer = await asyncio.open_connection(
-                    _PROXY_BACKEND_HOST, listen_port, limit=self._max_header_bytes
-                )
-            except OSError as exc:
-                logger.warning(
-                    "Cannot connect to tunnel %s:%d: %s", host, listen_port, exc
-                )
+            backend = await self._open_backend(host, listen_port)
+            if backend is None:
                 writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
                 await writer.drain()
                 return False, None
-            backend = _Backend(backend_reader, backend_writer, host)
+
+        # Only a safe, body-less request on a reused connection may be replayed:
+        # a body has already been streamed from the client by the time the
+        # backend failure is noticed, and a non-idempotent request might have
+        # been processed before the backend dropped it.
+        replayable = (
+            reused
+            and method.upper() in _REPLAYABLE_METHODS
+            and not _request_has_body(_parse_headers(header_data))
+        )
+
+        async def exchange(target: _Backend, *, retryable: bool) -> bool:
+            try:
+                return await self._proxy_exchange(
+                    reader,
+                    writer,
+                    target.reader,
+                    target.writer,
+                    started_at,
+                    host,
+                    method,
+                    path,
+                    header_data,
+                    tunnel_token,
+                    retryable=retryable,
+                )
+            except Exception:
+                await _safe_close(target.writer)
+                raise
 
         try:
-            keep_alive = await self._proxy_exchange(
-                reader,
-                writer,
-                backend.reader,
-                backend.writer,
-                started_at,
-                host,
-                method,
-                path,
-                header_data,
-                tunnel_token,
-            )
-        except Exception:
-            await _safe_close(backend.writer)
-            raise
+            keep_alive = await exchange(backend, retryable=replayable)
+        except _StaleBackendError:
+            logger.debug("Reused backend for %s was stale, reconnecting", host)
+            backend = await self._open_backend(host, listen_port)
+            if backend is None:
+                writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+                await writer.drain()
+                return False, None
+            keep_alive = await exchange(backend, retryable=False)
 
         if not keep_alive:
             await _safe_close(backend.writer)
             backend = None
 
         return keep_alive, backend
+
+    async def _open_backend(self, host: str, listen_port: int) -> _Backend | None:
+        """Open a new backend connection (an SSH forwarded-tcpip channel)."""
+        try:
+            backend_reader, backend_writer = await asyncio.open_connection(
+                _PROXY_BACKEND_HOST, listen_port, limit=self._max_header_bytes
+            )
+        except OSError as exc:
+            logger.warning("Cannot connect to tunnel %s:%d: %s", host, listen_port, exc)
+            return None
+        return _Backend(backend_reader, backend_writer, host)
 
     async def _proxy_exchange(
         self,
@@ -508,8 +555,15 @@ class HttpProxy:
         path: str,
         header_data: bytes,
         tunnel_token: str | None,
+        *,
+        retryable: bool = False,
     ) -> bool:
-        """Relay one request/response and publish its WebLogs entry."""
+        """Relay one request/response and publish its WebLogs entry.
+
+        With ``retryable``, a backend that fails before sending any response
+        byte raises ``_StaleBackendError`` instead of answering 502, so the
+        caller can replay the request on a fresh connection.
+        """
         want_log = self._publisher is not None and tunnel_token is not None
         request_headers = _parse_headers(header_data)
 
@@ -525,12 +579,21 @@ class HttpProxy:
             )
             await backend_writer.drain()
         except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, OSError):
+            if retryable:
+                raise _StaleBackendError from None
             return False
 
         # Read the response header block from the backend.
         try:
             response_header = await backend_reader.readuntil(b"\r\n\r\n")
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, OSError):
+        except (asyncio.IncompleteReadError, OSError) as exc:
+            partial = getattr(exc, "partial", b"")
+            if retryable and not partial:
+                raise _StaleBackendError from None
+            writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+            await writer.drain()
+            return False
+        except asyncio.LimitOverrunError:
             writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
             await writer.drain()
             return False
