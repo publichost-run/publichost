@@ -291,6 +291,143 @@ async def test_connection_close_does_not_reuse_the_backend_connection():
     assert accepted_connections == 2
 
 
+async def test_idle_closed_backend_is_not_reused():
+    """A backend that closed an idle keep-alive connection must be replaced.
+
+    Dev servers drop idle keep-alive sockets on their own (Node's default
+    keepAliveTimeout is 5s). The half-closed transport is not "closing" on the
+    proxy side, so without an EOF check the next request - even a POST, which
+    is never replayed - would be sent into a dead socket and answered 502.
+    """
+    registry = Registry("publichost.test")
+    accepted_connections = 0
+
+    async def handler(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        nonlocal accepted_connections
+        accepted_connections += 1
+        headers = await reader.readuntil(b"\r\n\r\n")
+        if b"Content-Length: 2" in headers:
+            await reader.readexactly(2)
+        # Keep-alive response, then an "idle timeout" close by the backend.
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+        await writer.drain()
+        writer.close()
+
+    async with _backend(registry, handler) as domain:
+        async with _running_proxy(registry) as proxy_port:
+            reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+            expected = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
+
+            writer.write(f"GET / HTTP/1.1\r\nHost: {domain}\r\n\r\n".encode())
+            await writer.drain()
+            resp1 = await asyncio.wait_for(reader.readexactly(len(expected)), 5)
+            assert resp1 == expected
+
+            # Let the backend's FIN reach the proxy's reused connection.
+            await asyncio.sleep(0.2)
+
+            writer.write(
+                f"POST /submit HTTP/1.1\r\nHost: {domain}\r\n"
+                f"Content-Length: 2\r\n\r\nhi".encode()
+            )
+            await writer.drain()
+            resp2 = await asyncio.wait_for(reader.readexactly(len(expected)), 5)
+            assert resp2 == expected
+
+            writer.close()
+            await writer.wait_closed()
+
+    assert accepted_connections == 2
+
+
+def _stale_after_first_request_handler(
+    state: dict[str, int],
+) -> Callable[[asyncio.StreamReader, asyncio.StreamWriter], object]:
+    """Backend whose first connection dies after reading a second request.
+
+    Models the race where the backend closes an idle keep-alive connection
+    just as the proxy reuses it: the request is sent, and the connection is
+    closed without a single response byte. Later connections behave normally.
+    """
+
+    async def handler(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        state["accepted"] += 1
+        first_connection = state["accepted"] == 1
+        served = 0
+        while True:
+            try:
+                headers = await reader.readuntil(b"\r\n\r\n")
+            except asyncio.IncompleteReadError:
+                break
+            if b"Content-Length: 2" in headers:
+                await reader.readexactly(2)
+            if first_connection and served == 1:
+                break
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+            await writer.drain()
+            served += 1
+        writer.close()
+
+    return handler
+
+
+async def test_stale_reused_backend_replays_safe_request():
+    registry = Registry("publichost.test")
+    state = {"accepted": 0}
+    expected = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
+
+    async with _backend(registry, _stale_after_first_request_handler(state)) as domain:
+        async with _running_proxy(registry) as proxy_port:
+            reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+            for path in ("/one", "/two", "/three"):
+                writer.write(f"GET {path} HTTP/1.1\r\nHost: {domain}\r\n\r\n".encode())
+                await writer.drain()
+                resp = await asyncio.wait_for(reader.readexactly(len(expected)), 5)
+                assert resp == expected
+
+            writer.close()
+            await writer.wait_closed()
+
+    # The dead connection was replaced once, and the new one is reused.
+    assert state["accepted"] == 2
+
+
+async def test_stale_reused_backend_does_not_replay_request_with_body():
+    registry = Registry("publichost.test")
+    state = {"accepted": 0}
+
+    async with _backend(registry, _stale_after_first_request_handler(state)) as domain:
+        async with _running_proxy(registry) as proxy_port:
+            reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+            writer.write(f"GET / HTTP/1.1\r\nHost: {domain}\r\n\r\n".encode())
+            await writer.drain()
+            resp1 = await asyncio.wait_for(
+                reader.readexactly(
+                    len(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                ),
+                5,
+            )
+            assert b"200 OK" in resp1
+
+            writer.write(
+                f"POST /submit HTTP/1.1\r\nHost: {domain}\r\n"
+                f"Content-Length: 2\r\n\r\nhi".encode()
+            )
+            await writer.drain()
+            resp2 = await asyncio.wait_for(reader.read(4096), 5)
+            assert resp2.startswith(b"HTTP/1.1 502 Bad Gateway")
+
+            writer.close()
+            await writer.wait_closed()
+
+    # Never replayed: a POST might already have been processed.
+    assert state["accepted"] == 1
+
+
 async def test_published_headers_are_redacted():
     registry = Registry("publichost.test")
     capture = _Capture(events=[])
