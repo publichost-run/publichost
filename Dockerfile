@@ -17,7 +17,7 @@ COPY src ./src
 RUN uv sync --locked --no-dev --no-editable
 
 # --- Runtime stage ---
-FROM python:3.12-slim-bookworm
+FROM python:3.15-slim-bookworm
 RUN groupadd --system app && useradd --system --gid app --home-dir /app app
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
