@@ -24,7 +24,6 @@ class Tunnel(Base):
     )
     domain: Mapped[str] = mapped_column(String(255), nullable=False)
     ssh_domain: Mapped[str] = mapped_column(String(255), nullable=False)
-    frontend_domain: Mapped[str] = mapped_column(String(255), nullable=False)
     client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="opened")
     created_at: Mapped[datetime] = mapped_column(

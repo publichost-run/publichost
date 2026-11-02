@@ -1,0 +1,61 @@
+# Traefik dynamic configuration TEMPLATE.
+# deploy.sh renders it into deploy/traefik/dynamic.yml (gitignored), replacing
+# __DOMAIN__ with PUBLICHOST_BASE_DOMAIN and __DOMAIN_RE__ with the same value
+# regex-escaped. Edit this template, not the rendered file.
+#
+#   https://__DOMAIN__/            -> api (landing page, WebLogs, /api/v1/*)
+#   https://<label>.__DOMAIN__/    -> publichost (tunnel HTTP reverse proxy)
+#
+# One wildcard certificate (__DOMAIN__ + *.__DOMAIN__) is issued via the ACME
+# DNS-01 challenge; per-subdomain certificates would hit Let's Encrypt rate
+# limits because every tunnel gets a fresh random label.
+
+http:
+  routers:
+    api:
+      rule: 'Host(`__DOMAIN__`)'
+      entryPoints: [websecure]
+      service: api
+      tls:
+        certResolver: letsencrypt
+        domains:
+          - main: '__DOMAIN__'
+            sans: ['*.__DOMAIN__']
+
+    # Same host, longer rule => higher priority: rate-limit the public REST API.
+    api-public:
+      rule: 'Host(`__DOMAIN__`) && PathPrefix(`/api/v1/`)'
+      entryPoints: [websecure]
+      service: api
+      middlewares: [api-ratelimit]
+      tls:
+        certResolver: letsencrypt
+        domains:
+          - main: '__DOMAIN__'
+            sans: ['*.__DOMAIN__']
+
+    tunnels:
+      rule: 'HostRegexp(`^[a-z0-9-]+\.__DOMAIN_RE__$`)'
+      entryPoints: [websecure]
+      service: tunnels
+      tls:
+        certResolver: letsencrypt
+        domains:
+          - main: '__DOMAIN__'
+            sans: ['*.__DOMAIN__']
+
+  middlewares:
+    api-ratelimit:
+      rateLimit:
+        average: 10
+        burst: 20
+
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: 'http://api:8000'
+    tunnels:
+      loadBalancer:
+        servers:
+          - url: 'http://publichost:8080'

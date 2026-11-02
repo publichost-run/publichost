@@ -25,7 +25,7 @@ whenToUse: When you need to start the server locally, connect to it over SSH, or
 
 ## Settings via env
 
-`PUBLICHOST_BASE_DOMAIN`, `PUBLICHOST_SSH_DOMAIN`, `PUBLICHOST_FRONTEND_DOMAIN`,
+`PUBLICHOST_BASE_DOMAIN`, `PUBLICHOST_SSH_DOMAIN`,
 `PUBLICHOST_SSH_HOST`, `PUBLICHOST_SSH_PORT`,  `PUBLICHOST_HOST_KEY_PATH`,
 
 `PUBLICHOST_HTTP_HOST`, `PUBLICHOST_HTTP_PORT` — see the `Settings` docstring in

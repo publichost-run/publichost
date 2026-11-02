@@ -15,7 +15,6 @@ class Settings(CommonSettings):
     Environment variables:
         PUBLICHOST_BASE_DOMAIN: base domain used for tunnel subdomains.
         PUBLICHOST_SSH_DOMAIN: domain clients use for SSH connections.
-        PUBLICHOST_FRONTEND_DOMAIN: domain serving the public web frontend.
         PUBLICHOST_SSH_HOST: interface the SSH server binds to.
         PUBLICHOST_SSH_PORT: port the SSH server binds to.
         PUBLICHOST_HOST_KEY_PATH: path to the SSH host key (created on first run).
@@ -45,7 +44,6 @@ class Settings(CommonSettings):
 
     base_domain: str = "publichost.run"
     ssh_domain: str = "publichost.run"
-    frontend_domain: str = "publichost.io"
     ssh_host: str = "0.0.0.0"
     ssh_port: int = 2222
     host_key_path: str = "host_key"
@@ -71,9 +69,6 @@ class Settings(CommonSettings):
             weblogs_path=common.weblogs_path,
             base_domain=os.environ.get("PUBLICHOST_BASE_DOMAIN", cls.base_domain),
             ssh_domain=os.environ.get("PUBLICHOST_SSH_DOMAIN", cls.ssh_domain),
-            frontend_domain=os.environ.get(
-                "PUBLICHOST_FRONTEND_DOMAIN", cls.frontend_domain
-            ),
             ssh_host=os.environ.get("PUBLICHOST_SSH_HOST", cls.ssh_host),
             ssh_port=int(os.environ.get("PUBLICHOST_SSH_PORT", cls.ssh_port)),
             host_key_path=os.environ.get("PUBLICHOST_HOST_KEY_PATH", cls.host_key_path),

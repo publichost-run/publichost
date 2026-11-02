@@ -20,7 +20,10 @@ class ApiSettings(BaseSettings):
         PUBLICHOST_CLI_RELEASE_URL: URL of the latest CLI release page.
         PUBLICHOST_CLI_INSTALL_COMMAND: shell command that installs the CLI.
         PUBLICHOST_STATS_CACHE_SECONDS: TTL for the /api/v1/stats snapshot cache.
-        PUBLICHOST_CORS_ORIGINS: comma-separated list of allowed CORS origins.
+        PUBLICHOST_CORS_ORIGINS: comma-separated list of allowed CORS origins
+            (empty by default: the built-in page is same-origin).
+        PUBLICHOST_SSH_DOMAIN: host clients SSH into (shown on the landing page).
+        PUBLICHOST_EXTERNAL_SSH_PORT: public SSH port (shown on the landing page).
     """
 
     database_url: str = (
@@ -36,7 +39,9 @@ class ApiSettings(BaseSettings):
     cli_release_url: str = ""
     cli_install_command: str = ""
     stats_cache_seconds: int = 5
-    cors_origins: str = "https://publichost.io,https://www.publichost.io"
+    cors_origins: str = ""
+    ssh_domain: str = "localhost"
+    external_ssh_port: int = 2222
 
     class Config:
         env_prefix = "PUBLICHOST_"

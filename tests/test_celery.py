@@ -80,7 +80,6 @@ def _make_tunnel(**overrides) -> Tunnel:
         token="tok-123",
         domain="brave-fox-1.publichost.run",
         ssh_domain="ssh.publichost.run",
-        frontend_domain="publichost.run",
         status="opened",
         created_at=now,
         expires_at=now - timedelta(minutes=5),

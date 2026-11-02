@@ -219,7 +219,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# PublicHost: локальный SSH host key (генерируется при первом запуске)
+# PublicHost: local SSH host key (generated on first run)
 host_key
 host_key.pub
 
@@ -231,3 +231,7 @@ pgdata/
 
 # PublicHost: AI help build CLI Service for this have another repository
 cli/
+
+# PublicHost self-hosting: rendered Traefik config and deploy secrets
+deploy/traefik/dynamic.yml
+secrets/

@@ -19,8 +19,9 @@ always in English.
   `proxy.py` (Host-header reverse proxy) + `registry.py` (in-memory state).
 - Separate FastAPI app (`src/publichost/api/`) with PostgreSQL, Celery
   workers/beat, Redis as event bus (`events.py`) and Celery broker.
-- Docker Compose topology: nginx on the host → container:8080; SSH published
-  directly. Frontend is a separate team consuming the FastAPI/WebSocket API.
+- Docker Compose topology (installed by `./deploy.sh`): Traefik in Compose →
+  `publichost:8080` / `api:8000`; SSH published directly. No separate
+  frontend: the API serves the landing page and WebLogs viewer itself.
 - Known pressure points: in-memory Registry (single instance, no horizontal
   scaling), no abuse protection yet, one tunnel per connection.
 

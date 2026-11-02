@@ -16,6 +16,10 @@ reverse proxy by `Host` header, automatic tunnel lifetime (default 2 hours),
 PostgreSQL persistence, WebLogs via WebSocket + CSV files, and Celery cleanup
 tasks. Abuse protection is implemented: per-IP and server-wide connection
 limits, plus a per-IP concurrent-tunnel cap (`PUBLICHOST_MAX_TUNNELS_PER_IP`).
+The project is open source (MIT) and self-hostable with a single
+`./deploy.sh` (Docker Compose + Traefik + Cloudflare DNS-01 wildcard TLS).
+There is no separate frontend: the API serves a built-in landing page and the
+WebLogs viewer at `https://<base_domain>/?token=<token>`.
 Not yet implemented: multiple tunnels per single connection.
 
 ## Stack
@@ -63,6 +67,7 @@ src/publichost/
     models.py     # SQLAlchemy models
     db.py         # async engine/session
     consumer.py   # Redis pub/sub consumer, persists tunnel events to Postgres
+    routers/pages.py        # GET / — landing page + WebLogs viewer (?token=)
     routers/weblogs.py      # WebSocket /channel/weblogs?token=
     routers/cli_release.py  # public GET /api/v1/cli/version (CLI release metadata)
     routers/stats.py        # public GET /api/v1/stats (cached service stats)
@@ -72,12 +77,13 @@ src/publichost/
     cli.py        # CLI entry points for api/worker/beat
 tests/          # pytest, src-layout (package is installed editable via uv sync)
 Dockerfile      # multi-stage: uv build + slim runtime, non-root user
-docker-compose.yml  # publichost, api, worker, beat, redis, postgres
-deploy/         # example configs for host nginx + systemd (outside Docker)
+docker-compose.yml  # traefik, publichost, api, worker, beat, redis, postgres
+deploy.sh       # one-command self-host installer / updater (see deploy/README.md)
+deploy/         # Traefik dynamic config template + Cloudflare DNS helper
 ```
 
 Environment variables for the SSH/proxy server: `PUBLICHOST_BASE_DOMAIN`,
-`PUBLICHOST_SSH_DOMAIN`, `PUBLICHOST_FRONTEND_DOMAIN`, `PUBLICHOST_SSH_HOST`,
+`PUBLICHOST_SSH_DOMAIN`, `PUBLICHOST_SSH_HOST`,
 `PUBLICHOST_SSH_PORT`, `PUBLICHOST_HOST_KEY_PATH`, `PUBLICHOST_HTTP_HOST`,
 `PUBLICHOST_HTTP_PORT`, `PUBLICHOST_DEFAULT_LIFETIME_MINUTES`,
 `PUBLICHOST_EXPIRE_CHECK_INTERVAL_SECONDS`, `PUBLICHOST_REDIS_URL`,
@@ -94,22 +100,28 @@ Environment variables for the API: `PUBLICHOST_DATABASE_URL`,
 `PUBLICHOST_CLI_RELEASED_AT`, `PUBLICHOST_CLI_RELEASE_URL`,
 `PUBLICHOST_CLI_INSTALL_COMMAND`, `PUBLICHOST_STATS_CACHE_SECONDS` (in-process
 cache TTL for `/api/v1/stats`, default `5`), `PUBLICHOST_CORS_ORIGINS`
-(comma-separated allowed origins for the public REST endpoints, default
-`https://publichost.io,https://www.publichost.io`) (see
+(comma-separated extra origins for the public REST endpoints, default empty:
+the built-in page is same-origin), `PUBLICHOST_SSH_DOMAIN` and
+`PUBLICHOST_EXTERNAL_SSH_PORT` (shown in the landing page's `ssh` command) (see
 `src/publichost/api/config.py`).
 
-Public API endpoints: `GET /api/v1/cli/version` and `GET /api/v1/stats` are the
-only unauthenticated public HTTP endpoints on the API. They serve CLI release
-metadata and aggregate service stats respectively, are CORS-restricted to
-`PUBLICHOST_CORS_ORIGINS`, and rate-limited by the host nginx (see
-`deploy/nginx.api.conf.example`).
+Deployment-only variables (read by `deploy.sh` / `docker-compose.yml`):
+`PUBLICHOST_EXTERNAL_SSH_PORT`, `PUBLICHOST_ACME_EMAIL`,
+`PUBLICHOST_ACME_CA_SERVER`, `PUBLICHOST_POSTGRES_USER`,
+`PUBLICHOST_POSTGRES_PASSWORD`, `PUBLICHOST_POSTGRES_DB`,
+`PUBLICHOST_TRAEFIK_IMAGE`. The Cloudflare API token lives in
+`secrets/cloudflare_dns_api_token` (gitignored), mounted only into Traefik.
 
-The CLI lives in `cli/` and is a **separate Python distribution**
-(`publichost-cli`) with its own virtualenv and lock file. It must never be
-installed into the backend's root `.venv`: both distributions expose a console
-script literally named `publichost` (backend: the SSH server daemon; CLI: the
-client), so installing them together collides. Build/test the CLI via its own
-`cli/` venv (see the `cli-*` Makefile targets).
+Public API endpoints (all on `https://<base_domain>`): `GET /` (landing page /
+WebLogs viewer, strict hash-based CSP, `Referrer-Policy: no-referrer` because
+the token is in the URL), `GET /api/v1/cli/version` and `GET /api/v1/stats`.
+The REST endpoints are CORS-restricted to `PUBLICHOST_CORS_ORIGINS` and
+rate-limited by Traefik (`api-ratelimit` middleware in
+`deploy/traefik/dynamic.yml.tmpl`).
+
+The optional client CLI (`publichost-cli`) lives in a separate repository
+(`cli/` is gitignored). It must never be installed into the backend's `.venv`:
+both distributions expose a console script literally named `publichost`.
 
 Environment files:
 - `.env.example` — template for local development; copy to `.env`.
@@ -152,28 +164,30 @@ Environment files:
 
 ## Deployment (Docker)
 
-Topology: **nginx on the host, outside Docker**. Inside the container: SSH server
-+ HTTP reverse proxy. nginx does not proxy SSH traffic — port 22/2222 is
-published directly from the container. HTTP/HTTPS traffic flow: nginx (443) →
-`127.0.0.1:8080` → container:8080.
+Single supported mode: a Linux server with a domain on Cloudflare, set up by
+`./deploy.sh` (see README "Self-host in one command" and `deploy/README.md`).
+Topology: **Traefik inside Compose** terminates TLS (wildcard Let's Encrypt
+cert via Cloudflare DNS-01) on 80/443 and routes `<label>.<domain>` →
+`publichost:8080` and `<domain>` → `api:8000`. SSH is published directly from
+the `publichost` container; the HTTP proxy, API, Redis and Postgres are not
+published on the host.
 
 - `Dockerfile` — multi-stage: uv installs dependencies from `uv.lock`, runtime
   `python:3.12-slim`, non-root user `app`, entrypoint `python -m publichost`.
-- `docker-compose.yml` — `publichost` service, named volume `hostkey` → `/data`
-  (host key survives rebuilds; deleting the volume rotates the key), SSH and
-  HTTP-proxy ports. External ports and domains are read from `.env.docker`
-  (template: `.env.docker.example`).
+- `docker-compose.yml` — named volume `hostkey` → `/data` (host key survives
+  rebuilds; deleting the volume rotates the key), `letsencrypt` for certs.
+  Values are interpolated from `.env.docker` (template: `.env.docker.example`),
+  so always run compose via `./deploy.sh` or with `--env-file .env.docker`.
+  The compose project name is the directory name — do not add `name:` (it
+  would orphan existing volumes).
 - Commands:
   ```bash
-  cp .env.docker.example .env.docker
-  docker compose up -d --build
-  docker compose logs -f
+  ./deploy.sh            # install / reconfigure
+  ./deploy.sh update     # git pull + rebuild
+  ./deploy.sh logs       # follow logs
   ```
-- Example nginx server blocks and a systemd unit for the host are in
-  `deploy/` (`nginx.publichost.conf.example`, `nginx.api.conf.example`,
-  `systemd/publichost-compose.service.example`), see `deploy/README.md`.
-- Production port 22: either `22:2222` after moving the host sshd, or a
-  dedicated IP — do not change without user confirmation.
+- Client SSH port 22 only after the host sshd is moved elsewhere — `deploy.sh`
+  refuses to bind a busy port; do not change this without user confirmation.
 
 ## Agent hierarchy (`.claude/agents/`)
 
