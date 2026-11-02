@@ -1,0 +1,36 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ./deploy.sh --domain ...
+        2. ssh -p 2222 -R 0:localhost:3000 ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output of `./deploy.sh logs <service>`. Remove tokens, IPs and domains you do not want to share.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      placeholder: git rev-parse --short HEAD
+  - type: input
+    id: env
+    attributes:
+      label: Server OS and Docker version
+      placeholder: Ubuntu 24.04, Docker 27.x
