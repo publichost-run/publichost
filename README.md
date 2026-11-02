@@ -1,110 +1,195 @@
+<div align="center">
+
+<img src="docs/assets/logo.svg" width="96" height="96" alt="PublicHost logo">
+
 # PublicHost
 
-Self-hosted SSH tunnels with one-time subdomains, in the spirit of
-localhost.run / serveo. Anyone can expose a local web server with plain `ssh`:
-no signup, no client to install.
+**Self-hosted HTTPS tunnels over plain SSH. No client and no signup. One command to deploy.**
 
-```bash
-ssh -p 2222 -R 0:localhost:3000 tunnel.example.com
-```
+[![Release](https://img.shields.io/github/v/release/publichost-run/publichost?sort=semver)](https://github.com/publichost-run/publichost/releases)
+[![CI](https://github.com/publichost-run/publichost/actions/workflows/ci.yml/badge.svg)](https://github.com/publichost-run/publichost/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/publichost-run/publichost/graph/badge.svg)](https://codecov.io/gh/publichost-run/publichost)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Docker Compose](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![GitHub stars](https://img.shields.io/github/stars/publichost-run/publichost?style=social)](https://github.com/publichost-run/publichost/stargazers)
 
-The server answers with a banner:
+[Quick start](#-quick-start) •
+[Self-host](#-self-host-in-one-command) •
+[How it works](#-how-it-works) •
+[Configuration](#-configuration) •
+[Contributing](#-contributing)
 
-```
+</div>
+
+---
+
+Share `localhost` with the world using nothing but `ssh`:
+
+```console
+$ ssh -p 2222 -R 0:localhost:3000 tunnel.example.com
+
 ┌──────────────────────────────────────────────────────────────┐
 │  PublicHost — your one-time tunnel is ready                  │
 │  HTTPS URL:   https://swift-fox-123.tunnel.example.com       │
 │  WebLogs:     https://tunnel.example.com/?token=…            │
 │  Expires:     2026-11-02 14:00:00 UTC                        │
-│  ...                                                         │
+│  SSH host:    tunnel.example.com                             │
+│                                                              │
+│  Keep this SSH session open to keep the tunnel alive.        │
+│  Type 'extend <minutes>' to add time (e.g. extend 30).       │
+│  Press Ctrl+C or close the session to stop.                  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **One-time subdomain** per SSH connection, released when it disconnects.
-- **Automatic HTTPS** via a Let's Encrypt wildcard certificate.
-- **WebLogs**: live request inspector in the browser (method, path, status,
-  latency, headers, body; `Authorization`/`Cookie` redacted).
-- **Lifetime limit** (default 2 h), extendable with `extend <minutes>`.
-- **Abuse protection**: per-IP and global connection limits, per-IP tunnel cap.
+PublicHost works like localhost.run or serveo, except **you run it on your
+own server, under your own domain**.
 
-## Self-host in one command
+## ✨ Features
 
-You need:
+| | |
+|---|---|
+| 🔑 **Zero install** | Clients need only `ssh`, which ships with macOS, Linux and Windows 10+. |
+| 🔒 **Automatic HTTPS** | A Let's Encrypt wildcard certificate is issued and renewed for you. |
+| 🎲 **One-time subdomains** | Readable random names (`swift-fox-123`), released when the SSH session ends. |
+| 📜 **WebLogs** | A live request inspector in the browser: method, path, status, latency, headers, body. |
+| ⏱️ **Lifetimes** | Tunnels expire after 2 h by default; extend them with `extend <minutes>`. |
+| 🛡️ **Abuse protection** | Per-IP and global connection limits, a per-IP tunnel cap, and `Authorization`/`Cookie` redaction. |
+| 🔌 **WebSockets & streaming** | WebSocket upgrades, SSE and chunked transfer pass through the tunnel. |
+| 🚀 **One-command deploy** | `./deploy.sh` sets up Docker, DNS, TLS, the firewall and health checks. |
 
-1. A Linux server with a public IPv4 address (1 vCPU / 1 GB RAM is enough),
-   with ports **80**, **443** and the SSH port for clients (default **2222**)
-   free and open.
-2. A domain on **Cloudflare** DNS (a subdomain like `tunnel.example.com` works
-   too; use one if a website already lives on the bare domain) and a
-   Cloudflare API token from the **Edit zone DNS** template with the extra
-   permission **Zone / Zone / Read**.
+## 🚀 Quick start
 
-Then, on the server:
+On your machine (the client):
 
 ```bash
-git clone https://github.com/publichost-run/publichost-backend.git
+python3 -m http.server 3000                          # anything listening on localhost:3000
+ssh -p 2222 -R 0:localhost:3000 tunnel.example.com   # keep this session open
+```
+
+Open the printed `https://…` URL. The WebLogs link shows every request in
+real time. Inside the session, type `extend 30` to add 30 minutes, `help` to
+list commands, and Ctrl+C to close the tunnel.
+
+## 💻 Self-host in one command
+
+**You need:**
+
+1. A Linux server with a public IPv4 address (1 vCPU / 1 GB RAM is enough).
+   Ports **80**, **443** and the client SSH port (default **2222**) must be
+   free and reachable.
+2. A domain on **Cloudflare** DNS. A subdomain such as `tunnel.example.com`
+   works too; use one if a website already lives on the bare domain.
+3. A Cloudflare API token made from the **Edit zone DNS** template, with the
+   extra permission **Zone / Zone / Read**.
+
+**Then:**
+
+```bash
+git clone https://github.com/publichost-run/publichost.git
 ```
 
 ```bash
-cd publichost-backend && ./deploy.sh
+cd publichost && ./deploy.sh
 ```
 
-`deploy.sh` asks for the domain, an email for Let's Encrypt, the SSH port and
-the Cloudflare token, and then:
+The script asks for the domain, an email for Let's Encrypt, the SSH port and
+the token. Then it:
 
 - installs Docker if it is missing (after asking);
-- writes `.env.docker` with a generated database password;
-- creates the DNS records `<domain>` and `*.<domain>` in Cloudflare (DNS only;
-  existing records pointing elsewhere are never replaced without asking);
-- opens the ports in `ufw`/`firewalld` if one of them is active;
+- writes `.env.docker` with a generated database password, and stores the
+  token in `secrets/` with mode 600;
+- creates the DNS-only records `<domain>` and `*.<domain>` in Cloudflare.
+  Existing records that point elsewhere are never replaced without asking;
+- opens the ports in `ufw` or `firewalld` if either is active;
 - builds and starts the stack, waits for the wildcard certificate and checks
-  that routing works;
-- prints the `ssh` command for your users and the server's host key fingerprint.
+  routing;
+- prints the `ssh` command for your users and the server's host key
+  fingerprint.
 
-Non-interactive (e.g. from a provisioning script):
+<details>
+<summary><b>Non-interactive install and day-2 operations</b></summary>
 
 ```bash
 CF_API_TOKEN=... ./deploy.sh --domain tunnel.example.com --email you@example.com --ssh-port 2222 -y
 ```
 
-Day-2 operations:
-
 | Command | What it does |
 |---|---|
-| `./deploy.sh update` | `git pull`, rebuild, restart (configuration is kept) |
+| `./deploy.sh update` | `git pull`, rebuild and restart (configuration is kept) |
 | `./deploy.sh status` | container status |
 | `./deploy.sh logs [service]` | follow logs |
 | `./deploy.sh restart` / `down` | restart / stop (data is kept) |
 | `./deploy.sh --reconfigure` | change domain, email, port or token |
+| `./deploy.sh --staging` | test against the Let's Encrypt staging CA |
 | `./deploy.sh uninstall` | stop and **delete** all data |
 
-Port **22** for clients is possible only after moving the server's own `sshd`
-to another port (make sure you can still log in first). See
-[deploy/README.md](deploy/README.md) for the architecture, where secrets live
-and how to test against the Let's Encrypt staging CA.
-
-## Using a tunnel
+Skip the local build by running a published multi-arch image (amd64/arm64)
+from [GHCR](https://github.com/publichost-run/publichost/pkgs/container/publichost);
+keep its version in sync with your checkout:
 
 ```bash
-python3 -m http.server 3000                         # something on localhost:3000
-ssh -p 2222 -R 0:localhost:3000 tunnel.example.com  # keep this session open
+./deploy.sh --image ghcr.io/publichost-run/publichost:1.0.0
 ```
 
-Inside the session type `extend 30` to add 30 minutes, `help` for commands, and
-Ctrl+C to close the tunnel. `https://<domain>/` shows the command to run.
+Clients can use port **22** only after you move the server's own `sshd` to
+another port. Make sure you can still log in before you do.
 
-## Configuration
+</details>
 
-`deploy.sh` manages the essentials. Everything else is in `.env.docker` (see
-the comments in [.env.docker.example](.env.docker.example)); re-run
+## 🧭 How it works
+
+```mermaid
+flowchart LR
+    subgraph client["Your machine"]
+        app["localhost:3000"]
+    end
+    subgraph server["Your server (docker compose)"]
+        ssh["publichost<br/>SSH server"]
+        proxy["publichost<br/>HTTP proxy"]
+        traefik["Traefik<br/>wildcard TLS"]
+        api["API<br/>landing + WebLogs"]
+        redis[("Redis")]
+        pg[("PostgreSQL")]
+    end
+    visitor(["Visitor"])
+
+    app -- "ssh -R 0:localhost:3000" --> ssh
+    visitor -- "https://label.domain" --> traefik
+    traefik --> proxy
+    proxy -- "SSH channel" --> app
+    traefik -- "https://domain" --> api
+    proxy -. "request events" .-> redis
+    redis -.-> api
+    api --- pg
+```
+
+1. **SSH:** the client opens a remote forward. PublicHost assigns a random
+   subdomain and binds a listener on loopback only.
+2. **HTTPS:** Traefik terminates TLS with a single wildcard certificate.
+   `<label>.<domain>` goes to the tunnel proxy, the bare `<domain>` goes to the
+   API.
+3. **Proxy:** routing is by `Host` header to the tunnel listener, which
+   carries the request back over SSH to the client's `localhost`.
+4. **WebLogs:** request metadata (with sensitive headers redacted) flows
+   through Redis to the API, which streams it to the browser over a WebSocket.
+
+More detail: [deploy/README.md](deploy/README.md) and [AGENTS.md](AGENTS.md).
+
+## 🔧 Configuration
+
+`deploy.sh` manages the essentials. Everything else lives in `.env.docker`; see
+the comments in [.env.docker.example](.env.docker.example). Re-run
 `./deploy.sh` after editing it.
 
 | Variable | Description | Default |
 |---|---|---|
-| `PUBLICHOST_BASE_DOMAIN` | Tunnels are `<label>.<base_domain>` | set by deploy.sh |
+| `PUBLICHOST_BASE_DOMAIN` | Tunnels are `<label>.<base_domain>` | set by `deploy.sh` |
 | `PUBLICHOST_SSH_DOMAIN` | Host clients SSH into | = base domain |
 | `PUBLICHOST_EXTERNAL_SSH_PORT` | Public SSH port | `2222` |
-| `PUBLICHOST_ACME_EMAIL` | Let's Encrypt account email | set by deploy.sh |
+| `PUBLICHOST_ACME_EMAIL` | Let's Encrypt account email | set by `deploy.sh` |
 | `PUBLICHOST_ACME_CA_SERVER` | ACME directory (production or staging) | Let's Encrypt production |
 | `PUBLICHOST_DEFAULT_LIFETIME_MINUTES` | Default tunnel lifetime | `120` |
 | `PUBLICHOST_MAX_EXTEND_MINUTES` | Max minutes one `extend` adds | `120` |
@@ -115,38 +200,62 @@ the comments in [.env.docker.example](.env.docker.example)); re-run
 | `PUBLICHOST_CORS_ORIGINS` | Extra browser origins for `/api/v1/*` | empty |
 | `PUBLICHOST_TRAEFIK_IMAGE` | Traefik image | `traefik:v3.7` |
 
-Advanced/internal variables (bind addresses, internal ports, Redis/DB URLs,
-heartbeat, CLI release metadata) are documented in
-[`src/publichost/tunnel/config.py`](src/publichost/tunnel/config.py) and
-[`src/publichost/api/config.py`](src/publichost/api/config.py).
+Advanced and internal variables are documented in
+[`tunnel/config.py`](src/publichost/tunnel/config.py) and
+[`api/config.py`](src/publichost/api/config.py).
 
-## Public HTTP API
+<details>
+<summary><b>Public HTTP API</b></summary>
 
-Served on `https://<domain>/`:
+All endpoints are served on `https://<domain>/`:
 
-- `GET /` — landing page; with `?token=<token>` the WebLogs viewer.
-- `WS /channel/weblogs?token=<token>` — live request log stream.
-- `GET /api/v1/stats` — active tunnels, requests in the last 24 h, relay status.
-- `GET /api/v1/cli/version` — release metadata for an optional client CLI.
+| Endpoint | Description |
+|---|---|
+| `GET /` | Landing page; with `?token=<token>`, the WebLogs viewer |
+| `WS /channel/weblogs?token=<token>` | Live request log stream (JSON messages) |
+| `GET /api/v1/stats` | Active tunnels, requests in the last 24 h, relay status |
+| `GET /api/v1/cli/version` | Release metadata for an optional client CLI |
 
-## Development
+</details>
+
+## 🔐 Security
+
+- Clients never get a shell, exec or SFTP. The SSH session only prints a
+  banner and accepts `extend`/`help`/`exit`.
+- Tunnel listeners bind to `127.0.0.1` only. The proxy, API, Redis and
+  PostgreSQL are not published on the host.
+- Tunnel traffic payloads are not logged. WebLogs redact `Authorization`,
+  `Cookie` and `Set-Cookie`.
+- The WebLogs page uses a strict hash-based CSP and `no-referrer`, and renders
+  request data only as text.
+- The Cloudflare token is readable only by the Traefik container.
+
+Found a vulnerability? Please report it privately, as described in
+[SECURITY.md](SECURITY.md).
+
+## 🧑‍💻 Development
 
 ```bash
 uv sync                        # install dependencies (requires uv)
 cp .env.example .env           # local settings (Redis disabled)
 uv run python -m publichost    # SSH server :2222 + HTTP proxy :8080
-ssh -p 2222 -R 0:localhost:3000 localhost
-curl -H "Host: <label>.publichost.run" http://localhost:8080/
 ```
 
 ```bash
-uv run pytest -q      # tests
-uv run ruff check     # lint
-uv run ruff format    # formatting
+uv run pytest -q --cov    # tests + coverage
+uv run ruff check         # lint
+uv run ruff format        # formatting
 ```
 
-Architecture, conventions and roadmap: [AGENTS.md](AGENTS.md).
+## 🤝 Contributing
 
-## License
+Issues and pull requests are welcome. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md) and look for
+[`good first issue`](https://github.com/publichost-run/publichost/labels/good%20first%20issue).
+Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Changes are listed in
+the [CHANGELOG](CHANGELOG.md). If PublicHost is useful to you, a ⭐ helps
+others find it.
 
-[MIT](LICENSE)
+## 📄 License
+
+[MIT](LICENSE) © PublicHost contributors

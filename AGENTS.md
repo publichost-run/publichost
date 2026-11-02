@@ -80,6 +80,8 @@ Dockerfile      # multi-stage: uv build + slim runtime, non-root user
 docker-compose.yml  # traefik, publichost, api, worker, beat, redis, postgres
 deploy.sh       # one-command self-host installer / updater (see deploy/README.md)
 deploy/         # Traefik dynamic config template + Cloudflare DNS helper
+.github/        # CI (tests+coverage on 3.11-3.13, shellcheck, docker build), Release
+                #   (GHCR multi-arch images on main/tags + GitHub release), Dependabot, templates
 ```
 
 Environment variables for the SSH/proxy server: `PUBLICHOST_BASE_DOMAIN`,
@@ -109,7 +111,8 @@ Deployment-only variables (read by `deploy.sh` / `docker-compose.yml`):
 `PUBLICHOST_EXTERNAL_SSH_PORT`, `PUBLICHOST_ACME_EMAIL`,
 `PUBLICHOST_ACME_CA_SERVER`, `PUBLICHOST_POSTGRES_USER`,
 `PUBLICHOST_POSTGRES_PASSWORD`, `PUBLICHOST_POSTGRES_DB`,
-`PUBLICHOST_TRAEFIK_IMAGE`. The Cloudflare API token lives in
+`PUBLICHOST_TRAEFIK_IMAGE`, `PUBLICHOST_IMAGE` (published backend image to
+pull instead of building locally; empty = build). The Cloudflare API token lives in
 `secrets/cloudflare_dns_api_token` (gitignored), mounted only into Traefik.
 
 Public API endpoints (all on `https://<base_domain>`): `GET /` (landing page /
@@ -213,7 +216,3 @@ In `.claude/skills/`: `feature` (full planner → coder → reviewer → refacto
 pipeline), `security-audit` (defensive audit of the tunneling service),
 `api-contract` (API document for the Frontend team), `git-flow` (branch/commit/
 PR conventions), `doc-generate` (generate docs/ incl. frontend guide).
-
-In `.kimi-code/skills/`: `run-dev-server` (local start and connect),
-`test-tunnel` (E2E tunnel check), `ship-check` (pre-commit checks),
-`deploy-docker` (build and deploy via Docker).

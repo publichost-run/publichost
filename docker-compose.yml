@@ -59,7 +59,7 @@ services:
 
   publichost:
     build: .
-    image: publichost-backend:latest
+    image: ${PUBLICHOST_IMAGE:-publichost-backend:latest}
     container_name: publichost
     restart: unless-stopped
     env_file: .env.docker
@@ -97,7 +97,7 @@ services:
 
   api:
     build: .
-    image: publichost-backend:latest
+    image: ${PUBLICHOST_IMAGE:-publichost-backend:latest}
     container_name: publichost-api
     restart: unless-stopped
     command: ["publichost-api"]
@@ -118,7 +118,7 @@ services:
 
   worker:
     build: .
-    image: publichost-backend:latest
+    image: ${PUBLICHOST_IMAGE:-publichost-backend:latest}
     container_name: publichost-worker
     restart: unless-stopped
     command: ["publichost-worker"]
@@ -128,7 +128,7 @@ services:
 
   beat:
     build: .
-    image: publichost-backend:latest
+    image: ${PUBLICHOST_IMAGE:-publichost-backend:latest}
     container_name: publichost-beat
     restart: unless-stopped
     command: ["publichost-beat"]

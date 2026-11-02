@@ -17,7 +17,7 @@ CF_TOKEN_FILE="$SECRET_DIR/cloudflare_dns_api_token"
 TRAEFIK_TEMPLATE="$ROOT/deploy/traefik/dynamic.yml.tmpl"
 TRAEFIK_CONFIG="$ROOT/deploy/traefik/dynamic.yml"
 CF_HELPER="$ROOT/deploy/cloudflare_dns.py"
-BACKEND_IMAGE="publichost-backend:latest"
+LOCAL_IMAGE="publichost-backend:latest"
 PROD_CA="https://acme-v02.api.letsencrypt.org/directory"
 STAGING_CA="https://acme-staging-v02.api.letsencrypt.org/directory"
 
@@ -58,6 +58,8 @@ Options (install):
                        argument: it would be visible in ps and shell history.
   --ssh-port PORT      Public SSH port for clients (default 2222)
   --ip IPV4            Server public IPv4 (auto-detected by default)
+  --image REF          Run a published image instead of building locally, e.g.
+                       ghcr.io/publichost-run/publichost:1.0.0 ("" = build)
   --staging            Use the Let's Encrypt staging CA (testing, untrusted certs)
   --skip-dns           Do not create/update DNS records in Cloudflare
   --force-dns          Overwrite existing A records for the domain without asking
@@ -69,7 +71,7 @@ EOF
 
 # ------------------------------------------------------------------- args ---
 COMMAND="install"
-OPT_DOMAIN="" OPT_EMAIL="" OPT_SSH_PORT="" OPT_IP=""
+OPT_DOMAIN="" OPT_EMAIL="" OPT_SSH_PORT="" OPT_IP="" OPT_IMAGE="" OPT_IMAGE_SET=0
 OPT_CF_TOKEN="${CF_API_TOKEN:-}"
 OPT_STAGING=0 OPT_SKIP_DNS=0 OPT_FORCE_DNS=0 OPT_RECONFIGURE=0 ASSUME_YES=0
 EXTRA_ARGS=()
@@ -87,6 +89,8 @@ while [[ $# -gt 0 ]]; do
       OPT_CF_TOKEN="$(<"$2")"; shift 2 ;;
     --ssh-port) OPT_SSH_PORT="${2:?--ssh-port needs a value}"; shift 2 ;;
     --ip) OPT_IP="${2:?--ip needs a value}"; shift 2 ;;
+    --image) [[ $# -ge 2 ]] || die "--image needs a value"
+      OPT_IMAGE="$2"; OPT_IMAGE_SET=1; shift 2 ;;
     --staging) OPT_STAGING=1; shift ;;
     --skip-dns) OPT_SKIP_DNS=1; shift ;;
     --force-dns) OPT_FORCE_DNS=1; shift ;;
@@ -398,6 +402,10 @@ configure() {
   env_set PUBLICHOST_ACME_EMAIL "$EMAIL"
   env_set PUBLICHOST_ACME_CA_SERVER "$ca"
   env_set PUBLICHOST_POSTGRES_PASSWORD "$pg_password"
+  if [[ $OPT_IMAGE_SET -eq 1 ]]; then
+    [[ -z $OPT_IMAGE || $OPT_IMAGE =~ ^[a-z0-9./_:@-]+$ ]] || die "invalid image reference: '$OPT_IMAGE'"
+    env_set PUBLICHOST_IMAGE "$OPT_IMAGE"
+  fi
   [[ -n $(env_get PUBLICHOST_POSTGRES_USER) ]] || env_set PUBLICHOST_POSTGRES_USER publichost
   [[ -n $(env_get PUBLICHOST_POSTGRES_DB) ]] || env_set PUBLICHOST_POSTGRES_DB publichost
 
@@ -451,15 +459,21 @@ run_cf_helper() {
   if command -v python3 >/dev/null 2>&1; then
     CF_API_TOKEN="$CF_TOKEN" python3 -I "$CF_HELPER" "$@"
   else
-    if ! "${DOCKER[@]}" image inspect "$BACKEND_IMAGE" >/dev/null 2>&1; then
-      compose build publichost || die "failed to build $BACKEND_IMAGE"
+    local image
+    image="$(backend_image)"
+    if ! "${DOCKER[@]}" image inspect "$image" >/dev/null 2>&1; then
+      if [[ -n $(env_get PUBLICHOST_IMAGE) ]]; then
+        compose pull publichost || die "failed to pull $image"
+      else
+        compose build publichost || die "failed to build $image"
+      fi
     fi
     local docker_cmd=("${DOCKER[@]}")
     # sudo's env_reset would drop the token otherwise.
     [[ ${DOCKER[0]} == sudo ]] && docker_cmd=(sudo --preserve-env=CF_API_TOKEN docker)
     CF_API_TOKEN="$CF_TOKEN" "${docker_cmd[@]}" run --rm -e CF_API_TOKEN \
       -v "$CF_HELPER:/opt/cloudflare_dns.py:ro" --entrypoint python \
-      "$BACKEND_IMAGE" -I /opt/cloudflare_dns.py "$@"
+      "$image" -I /opt/cloudflare_dns.py "$@"
   fi
 }
 
@@ -510,10 +524,25 @@ check_dns_resolution() {
 }
 
 # ---------------------------------------------------------------- start ----
+backend_image() {
+  local image
+  image="$(env_get PUBLICHOST_IMAGE)"
+  printf '%s' "${image:-$LOCAL_IMAGE}"
+}
+
 start_stack() {
-  step "Building and starting containers (first build takes a few minutes)"
-  compose build --pull
-  compose up -d --remove-orphans --wait --wait-timeout 300 \
+  local image
+  image="$(env_get PUBLICHOST_IMAGE)"
+  if [[ -n $image ]]; then
+    step "Pulling images ($image)"
+    compose pull --quiet || die "failed to pull images; check PUBLICHOST_IMAGE in .env.docker"
+  else
+    step "Building and starting containers (first build takes a few minutes)"
+    compose pull --quiet --ignore-buildable \
+      || warn "could not pull traefik/redis/postgres updates; using local images"
+    compose build --pull
+  fi
+  compose up -d --no-build --remove-orphans --wait --wait-timeout 300 \
     || die "some containers did not become healthy; see: ./deploy.sh logs"
   ok "all containers are up"
 }
