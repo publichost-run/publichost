@@ -70,12 +70,11 @@ async def run_server(
         server_host_keys=[host_key],
     )
     logger.info(
-        "SSH server listening on %s:%d, handing out *.%s (ssh host: %s, frontend: %s)",
+        "SSH server listening on %s:%d, handing out *.%s (ssh host: %s)",
         settings.ssh_host,
         settings.ssh_port,
         settings.base_domain,
         settings.ssh_domain,
-        settings.frontend_domain,
     )
     await asyncio.Future()  # run forever
 

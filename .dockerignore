@@ -15,3 +15,5 @@ docker-compose.yml
 host_key
 host_key.pub
 .env
+secrets/
+.env.docker

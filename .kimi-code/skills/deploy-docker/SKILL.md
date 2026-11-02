@@ -6,30 +6,30 @@ whenToUse: When you need to build a Docker image, start or update the service on
 
 # Docker deployment
 
-Topology: nginx runs on the host outside Docker; the container runs only the
-PublicHost SSH server + HTTP reverse proxy. SSH traffic goes straight to the
-container, bypassing nginx.
+Everything goes through `./deploy.sh` (see README "Self-host in one command").
+Topology: Traefik inside Compose terminates TLS (Let's Encrypt wildcard via
+Cloudflare DNS-01) on 80/443 and routes `<label>.<domain>` → `publichost:8080`,
+`<domain>` → `api:8000`. SSH goes straight to the `publichost` container.
 
 ## Main commands
 
-- Build image: `docker build -t publichost-backend .`
-- Start: `docker compose up -d`
-- Logs: `docker compose logs -f`
-- Update: `git pull && docker compose up -d --build`
-- Stop: `docker compose down` (host_key survives via named volume `hostkey`)
+- Install / reconfigure: `./deploy.sh` (`--reconfigure`, `--staging`, `-y`)
+- Update: `./deploy.sh update` (git pull + rebuild)
+- Status / logs: `./deploy.sh status`, `./deploy.sh logs [service]`
+- Stop: `./deploy.sh down` (data and host key survive in named volumes)
+- Raw compose always needs `--env-file .env.docker` (values are interpolated).
 
 ## Post-deployment check
 
-`ssh -p 2222 <host>` → banner with a one-time subdomain. After disconnect the
-logs show `Released <label>.<base_domain>`.
+`ssh -p <port> -R 0:localhost:3000 <domain>` → banner with a one-time subdomain;
+`https://<domain>/` shows the landing page. After disconnect the logs show
+`Released <label>.<base_domain>`.
 
 ## Caution
 
-- Deleting the `hostkey` volume (`docker compose down -v`) rotates the host key —
-  clients will see an SSH host-key-changed warning. Do not do this unless
-  necessary.
-- Production port: clients expect SSH on 22. Options: map `22:2222` (after moving
-  the host sshd to another port) or use a dedicated IP. Do not change without
+- `./deploy.sh uninstall` / `docker compose down -v` deletes the `hostkey`
+  volume and rotates the host key — clients will see an SSH host-key-changed
+  warning. Do not do this unless necessary.
+- Client SSH port 22 requires moving the host sshd first. Do not change without
   user confirmation.
-- The healthcheck makes a TCP connection every minute — in the logs this appears
-  as an Assigned/Released pair, which is normal.
+- Let's Encrypt rate limits: test with `./deploy.sh --staging`.

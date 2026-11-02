@@ -73,3 +73,20 @@ def test_exit_still_closes_the_channel():
 
     assert chan.closed is True
     assert any("Goodbye" in chunk for chunk in chan.written)
+
+
+def test_banner_points_weblogs_at_the_base_domain():
+    """WebLogs are served by the API on the bare base domain, not a frontend."""
+    from datetime import UTC, datetime
+
+    from publichost.tunnel.session import _format_banner
+
+    banner = _format_banner(
+        "swift-fox-1.example.com",
+        "tok123",
+        datetime.now(UTC),
+        "example.com",
+        "example.com",
+    )
+    assert "https://swift-fox-1.example.com" in banner
+    assert "https://example.com/?token=tok123" in banner

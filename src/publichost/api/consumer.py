@@ -42,7 +42,6 @@ async def _handle_tunnel_event(payload: dict[str, Any]) -> None:
                         token=token,
                         domain=domain,
                         ssh_domain=payload.get("ssh_domain", ""),
-                        frontend_domain=payload.get("frontend_domain", ""),
                         client_ip=payload.get("client_ip"),
                         status="opened",
                         created_at=_parse_iso(payload.get("created_at")),

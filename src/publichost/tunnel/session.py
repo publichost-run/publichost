@@ -32,12 +32,16 @@ def _format_banner(
     domain: str,
     token: str,
     expires_at: datetime,
-    frontend_domain: str,
+    base_domain: str,
     ssh_domain: str,
 ) -> str:
-    """Return a framed ASCII banner showing tunnel details."""
+    """Return a framed ASCII banner showing tunnel details.
+
+    WebLogs are served by the API on the bare base domain (see
+    ``publichost.api.routers.pages``), so no separate frontend is needed.
+    """
     https_url = f"https://{domain}"
-    weblogs_url = f"https://{frontend_domain}/channel/weblogs?token={token}"
+    weblogs_url = f"https://{base_domain}/?token={token}"
     expires_line = f"Expires:     {_format_datetime(expires_at)}"
     lines = [
         "",
@@ -97,7 +101,7 @@ class BannerSession(asyncssh.SSHServerSession):
                 self._domain,
                 self._token,
                 expires_at,
-                self._settings.frontend_domain,
+                self._settings.base_domain,
                 self._settings.ssh_domain,
             )
         )

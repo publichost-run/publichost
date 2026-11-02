@@ -7,12 +7,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from .config import settings
 from .consumer import consume_redis
 from .db import engine
 from .models import Base
-from .routers import cli_release, stats, weblogs
+from .routers import cli_release, pages, stats, weblogs
 
 
 @asynccontextmanager
@@ -20,6 +21,13 @@ async def lifespan(app: FastAPI):
     """Create tables and start Redis consumer on startup."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if conn.dialect.name == "postgresql":
+            # create_all never alters existing tables: drop the column that
+            # backed the removed external frontend so inserts keep working on
+            # databases created by older versions. Idempotent.
+            await conn.execute(
+                text("ALTER TABLE tunnels DROP COLUMN IF EXISTS frontend_domain")
+            )
     consumer_task = asyncio.create_task(consume_redis())
     yield
     consumer_task.cancel()
@@ -41,3 +49,4 @@ app.add_middleware(
 app.include_router(weblogs.router)
 app.include_router(stats.router)
 app.include_router(cli_release.router)
+app.include_router(pages.router)

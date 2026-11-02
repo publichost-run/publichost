@@ -195,7 +195,6 @@ class PublicHostSSHServer(asyncssh.SSHServer):
             "tunnel.opened",
             base_domain=self._settings.base_domain,
             ssh_domain=self._settings.ssh_domain,
-            frontend_domain=self._settings.frontend_domain,
             created_at=info.created_at.isoformat() if info else None,
             expires_at=info.expires_at.isoformat() if info else None,
         )
