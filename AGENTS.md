@@ -80,6 +80,7 @@ Dockerfile      # multi-stage: uv build + slim runtime, non-root user
 docker-compose.yml  # traefik, publichost, api, worker, beat, redis, postgres
 deploy.sh       # one-command self-host installer / updater (see deploy/README.md)
 deploy/         # Traefik dynamic config template + Cloudflare DNS helper
+.github/        # CI (tests+coverage on 3.11-3.13, shellcheck, docker build), Dependabot, templates
 ```
 
 Environment variables for the SSH/proxy server: `PUBLICHOST_BASE_DOMAIN`,
@@ -213,7 +214,3 @@ In `.claude/skills/`: `feature` (full planner → coder → reviewer → refacto
 pipeline), `security-audit` (defensive audit of the tunneling service),
 `api-contract` (API document for the Frontend team), `git-flow` (branch/commit/
 PR conventions), `doc-generate` (generate docs/ incl. frontend guide).
-
-In `.kimi-code/skills/`: `run-dev-server` (local start and connect),
-`test-tunnel` (E2E tunnel check), `ship-check` (pre-commit checks),
-`deploy-docker` (build and deploy via Docker).
