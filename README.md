@@ -35,7 +35,9 @@ You need:
    with ports **80**, **443** and the SSH port for clients (default **2222**)
    free and open.
 2. A domain on **Cloudflare** DNS (a subdomain like `tunnel.example.com` works
-   too) and a Cloudflare API token from the **Edit zone DNS** template.
+   too; use one if a website already lives on the bare domain) and a
+   Cloudflare API token from the **Edit zone DNS** template with the extra
+   permission **Zone / Zone / Read**.
 
 Then, on the server:
 
@@ -52,7 +54,8 @@ the Cloudflare token, and then:
 
 - installs Docker if it is missing (after asking);
 - writes `.env.docker` with a generated database password;
-- creates the DNS records `<domain>` and `*.<domain>` in Cloudflare (DNS only);
+- creates the DNS records `<domain>` and `*.<domain>` in Cloudflare (DNS only;
+  existing records pointing elsewhere are never replaced without asking);
 - opens the ports in `ufw`/`firewalld` if one of them is active;
 - builds and starts the stack, waits for the wildcard certificate and checks
   that routing works;

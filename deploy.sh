@@ -53,11 +53,14 @@ Commands:
 Options (install):
   --domain DOMAIN      Base domain, e.g. tunnel.example.com
   --email EMAIL        Email for Let's Encrypt notices
-  --cf-token TOKEN     Cloudflare API token (or env CF_API_TOKEN; prompted if absent)
+  --cf-token-file F    File with the Cloudflare API token (or env CF_API_TOKEN;
+                       prompted if absent). Never pass the token itself as an
+                       argument: it would be visible in ps and shell history.
   --ssh-port PORT      Public SSH port for clients (default 2222)
   --ip IPV4            Server public IPv4 (auto-detected by default)
   --staging            Use the Let's Encrypt staging CA (testing, untrusted certs)
   --skip-dns           Do not create/update DNS records in Cloudflare
+  --force-dns          Overwrite existing A records for the domain without asking
   --reconfigure        Ask all questions again even if .env.docker exists
   -y, --yes            Non-interactive: never prompt, accept defaults
   -h, --help           Show this help
@@ -68,7 +71,7 @@ EOF
 COMMAND="install"
 OPT_DOMAIN="" OPT_EMAIL="" OPT_SSH_PORT="" OPT_IP=""
 OPT_CF_TOKEN="${CF_API_TOKEN:-}"
-OPT_STAGING=0 OPT_SKIP_DNS=0 OPT_RECONFIGURE=0 ASSUME_YES=0
+OPT_STAGING=0 OPT_SKIP_DNS=0 OPT_FORCE_DNS=0 OPT_RECONFIGURE=0 ASSUME_YES=0
 EXTRA_ARGS=()
 
 if [[ $# -gt 0 && $1 != -* ]]; then
@@ -79,11 +82,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain) OPT_DOMAIN="${2:?--domain needs a value}"; shift 2 ;;
     --email) OPT_EMAIL="${2:?--email needs a value}"; shift 2 ;;
-    --cf-token) OPT_CF_TOKEN="${2:?--cf-token needs a value}"; shift 2 ;;
+    --cf-token-file)
+      [[ -r ${2:?--cf-token-file needs a path} ]] || die "cannot read $2"
+      OPT_CF_TOKEN="$(<"$2")"; shift 2 ;;
     --ssh-port) OPT_SSH_PORT="${2:?--ssh-port needs a value}"; shift 2 ;;
     --ip) OPT_IP="${2:?--ip needs a value}"; shift 2 ;;
     --staging) OPT_STAGING=1; shift ;;
     --skip-dns) OPT_SKIP_DNS=1; shift ;;
+    --force-dns) OPT_FORCE_DNS=1; shift ;;
     --reconfigure) OPT_RECONFIGURE=1; shift ;;
     -y|--yes) ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -178,9 +184,11 @@ ensure_docker() {
     confirm "Install Docker now using the official script (get.docker.com)?" y \
       || die "Docker is required: https://docs.docker.com/engine/install/"
     need_sudo
-    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-    "${SUDO[@]}" sh /tmp/get-docker.sh
-    rm -f /tmp/get-docker.sh
+    local installer
+    installer="$(mktemp)"
+    curl -fsSL https://get.docker.com -o "$installer"
+    "${SUDO[@]}" sh "$installer"
+    rm -f "$installer"
     "${SUDO[@]}" systemctl enable --now docker >/dev/null 2>&1 || true
   fi
   if ! docker info >/dev/null 2>&1; then
@@ -291,7 +299,7 @@ detect_ip() {
 }
 
 # ------------------------------------------------------------ configure ----
-DOMAIN="" EMAIL="" SSH_PORT="" CF_TOKEN="" PUBLIC_IP=""
+DOMAIN="" EMAIL="" SSH_PORT="" CF_TOKEN="" PUBLIC_IP="" PREVIOUS_CA=""
 
 configure() {
   step "Configuration"
@@ -356,8 +364,9 @@ configure() {
   fi
   if [[ -z $CF_TOKEN ]]; then
     info "Create a Cloudflare API token: dash.cloudflare.com → My Profile →"
-    info "API Tokens → Create Token → template \"Edit zone DNS\" → Zone"
-    info "Resources: Include / Specific zone / your domain."
+    info "API Tokens → Create Token → template \"Edit zone DNS\", add the"
+    info "permission Zone / Zone / Read, Zone Resources: Include / Specific"
+    info "zone / your domain."
     ask_secret CF_TOKEN "Cloudflare API token"
   fi
   CF_TOKEN="$(printf '%s' "$CF_TOKEN" | tr -d '[:space:]')"
@@ -376,6 +385,7 @@ configure() {
     fi
   fi
 
+  PREVIOUS_CA="$(env_get PUBLICHOST_ACME_CA_SERVER)"
   local ca="$PROD_CA"
   [[ $OPT_STAGING -eq 1 ]] && ca="$STAGING_CA"
   if [[ $OPT_STAGING -eq 0 && $(env_get PUBLICHOST_ACME_CA_SERVER) == "$STAGING_CA" && $reask -eq 0 ]]; then
@@ -407,6 +417,20 @@ load_config() {
   SSH_PORT="${SSH_PORT:-2222}"
 }
 
+# Traefik keeps certificates from acme.json even when the CA changes, so a
+# staging certificate would survive a switch to production (and vice versa).
+reset_certs_if_ca_changed() {
+  local current volume
+  current="$(env_get PUBLICHOST_ACME_CA_SERVER)"
+  [[ -n $PREVIOUS_CA && $PREVIOUS_CA != "$current" ]] || return 0
+  volume="$(project_name)_letsencrypt"
+  "${DOCKER[@]}" volume inspect "$volume" >/dev/null 2>&1 || return 0
+  step "ACME CA changed: discarding old certificates"
+  compose rm -sf traefik >/dev/null 2>&1 || true
+  "${DOCKER[@]}" volume rm "$volume" >/dev/null
+  ok "removed volume $volume; a new certificate will be issued"
+}
+
 render_traefik() {
   local domain_re="${DOMAIN//./\\.}"
   D="$DOMAIN" RE="$domain_re" awk '
@@ -427,8 +451,13 @@ run_cf_helper() {
   if command -v python3 >/dev/null 2>&1; then
     CF_API_TOKEN="$CF_TOKEN" python3 -I "$CF_HELPER" "$@"
   else
-    "${DOCKER[@]}" image inspect "$BACKEND_IMAGE" >/dev/null 2>&1 || compose build publichost
-    CF_API_TOKEN="$CF_TOKEN" "${DOCKER[@]}" run --rm -e CF_API_TOKEN \
+    if ! "${DOCKER[@]}" image inspect "$BACKEND_IMAGE" >/dev/null 2>&1; then
+      compose build publichost || die "failed to build $BACKEND_IMAGE"
+    fi
+    local docker_cmd=("${DOCKER[@]}")
+    # sudo's env_reset would drop the token otherwise.
+    [[ ${DOCKER[0]} == sudo ]] && docker_cmd=(sudo --preserve-env=CF_API_TOKEN docker)
+    CF_API_TOKEN="$CF_TOKEN" "${docker_cmd[@]}" run --rm -e CF_API_TOKEN \
       -v "$CF_HELPER:/opt/cloudflare_dns.py:ro" --entrypoint python \
       "$BACKEND_IMAGE" -I /opt/cloudflare_dns.py "$@"
   fi
@@ -450,8 +479,19 @@ configure_dns() {
     info "  A  *.$DOMAIN  -> $PUBLIC_IP"
     return
   fi
-  run_cf_helper --domain "$DOMAIN" --ip "$PUBLIC_IP" \
-    || die "Cloudflare DNS update failed (check the token permissions: Zone → DNS → Edit)"
+  local force=() status=0
+  [[ $OPT_FORCE_DNS -eq 1 ]] && force=(--force)
+  run_cf_helper --domain "$DOMAIN" --ip "$PUBLIC_IP" "${force[@]}" || status=$?
+  if [[ $status -eq 2 ]]; then
+    warn "existing DNS records for $DOMAIN would be replaced (see above)."
+    warn "If a website lives on $DOMAIN, use a subdomain such as tunnel.$DOMAIN instead."
+    confirm "Replace them with DNS-only A records pointing at $PUBLIC_IP?" n \
+      || die "DNS left unchanged. Re-run with another domain, or with --force-dns"
+    status=0
+    run_cf_helper --domain "$DOMAIN" --ip "$PUBLIC_IP" --force || status=$?
+  fi
+  [[ $status -eq 0 ]] \
+    || die "Cloudflare DNS update failed (token needs Zone / DNS / Edit and Zone / Zone / Read)"
   ok "DNS records point at $PUBLIC_IP"
 }
 
@@ -534,6 +574,7 @@ cmd_install() {
   open_firewall "$SSH_PORT"
   render_traefik
   configure_dns
+  reset_certs_if_ca_changed
   start_stack
   check_dns_resolution
   wait_for_https || true
@@ -548,12 +589,8 @@ cmd_update() {
     step "Pulling the latest code"
     git -C "$ROOT" pull --ff-only || die "git pull failed; resolve it manually, then re-run"
   fi
-  ASSUME_YES=1
-  configure
-  render_traefik
-  start_stack
-  wait_for_https || true
-  summary
+  # Continue with the freshly pulled script, not the copy already in memory.
+  exec "$ROOT/deploy.sh" install --yes
 }
 
 cmd_uninstall() {

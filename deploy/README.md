@@ -44,20 +44,28 @@ browsers ─ HTTPS :443 ───┼─▶ traefik ── <label>.<domain> ─�
 ## Cloudflare token
 
 dash.cloudflare.com → My Profile → API Tokens → Create Token → template
-**Edit zone DNS** → Zone Resources: *Include / Specific zone / your zone*.
+**Edit zone DNS** → add permission *Zone / Zone / Read* → Zone Resources:
+*Include / Specific zone / your zone*.
 The same token is used by `deploy.sh` (DNS records) and by Traefik (certificate
 issuance and renewal). Records are created as **DNS only** (grey cloud):
 Cloudflare's proxy cannot carry SSH.
 
+Existing A records for `<domain>` / `*.<domain>` that point elsewhere, are
+proxied or duplicated are only replaced after confirmation (or with
+`--force-dns`). Prefer a dedicated subdomain if the bare domain hosts a site.
+
+## Timeouts
+
+Traefik's request read timeout is disabled
+(`respondingTimeouts.readTimeout=0`) because tunnels carry long uploads, SSE
+and WebSockets (the WebLogs socket lives as long as the tunnel). The trade-off
+is no hard cap on slow clients at the TLS edge.
+
 ## Testing
 
 `./deploy.sh --staging` uses the Let's Encrypt staging CA (untrusted
-certificates, no rate limits). Switch back with
-`./deploy.sh --reconfigure`, then delete the `letsencrypt` volume so the
-staging certificate is replaced:
-
-```bash
-./deploy.sh down
-docker volume rm "$(basename "$PWD" | tr -cd 'a-z0-9_-')_letsencrypt"
-./deploy.sh
-```
+certificates, no rate limits). Switch to production with
+`./deploy.sh --reconfigure`; when the CA changes, `deploy.sh` discards the old
+certificates so a trusted one is issued. Avoid repeated `uninstall`/`install`
+cycles in production: Let's Encrypt allows only 5 identical certificates per
+week.

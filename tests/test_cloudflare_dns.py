@@ -68,11 +68,32 @@ def test_upsert_keeps_matching_record(monkeypatch):
     assert [c[0] for c in api.calls] == ["GET"]
 
 
-def test_upsert_unproxies_and_repoints_record(monkeypatch):
+@pytest.mark.parametrize(
+    "records",
+    [
+        [{"id": "r1", "content": "9.9.9.9", "proxied": False}],
+        [{"id": "r1", "content": "1.2.3.4", "proxied": True}],
+        [
+            {"id": "r1", "content": "1.2.3.4", "proxied": False},
+            {"id": "r2", "content": "5.6.7.8", "proxied": False},
+        ],
+    ],
+)
+def test_upsert_refuses_to_touch_conflicting_records(monkeypatch, records):
+    existing = [{**r, "type": "A", "name": "example.com"} for r in records]
+    api = _FakeApi({}, existing)
+    monkeypatch.setattr(cf, "_request", api)
+    with pytest.raises(cf.ConflictError):
+        cf.upsert_a_record("t", "z1", "example.com", "1.2.3.4")
+    assert [c[0] for c in api.calls] == ["GET"]
+
+
+def test_upsert_force_unproxies_and_repoints_record(monkeypatch):
     record = {"id": "r1", "type": "A", "name": "example.com", "content": "9.9.9.9"}
     api = _FakeApi({}, [{**record, "proxied": True}])
     monkeypatch.setattr(cf, "_request", api)
-    assert cf.upsert_a_record("t", "z1", "example.com", "1.2.3.4") == "updated"
+    result = cf.upsert_a_record("t", "z1", "example.com", "1.2.3.4", force=True)
+    assert result == "updated"
     method, path, body = api.calls[-1]
     assert (method, path) == ("PUT", "/zones/z1/dns_records/r1")
     assert body is not None and body["proxied"] is False

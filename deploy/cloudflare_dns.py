@@ -10,9 +10,13 @@ the server:
 Records must not be proxied (orange cloud): Cloudflare's proxy does not carry
 SSH, and TLS is terminated by Traefik with a Let's Encrypt wildcard cert.
 
-The API token is read from the CF_API_TOKEN environment variable and needs the
-"Zone / DNS / Edit" permission for the zone (Cloudflare's "Edit zone DNS"
-template). Exit code 0 on success, 1 on any error (message on stderr).
+Existing records are never changed silently: if an A record for one of the
+names points elsewhere, is proxied, or there are several of them, the script
+exits with code 2 and lists them, unless --force is given.
+
+The API token is read from the CF_API_TOKEN environment variable and needs
+"Zone / DNS / Edit" and "Zone / Zone / Read" for the zone. Exit codes: 0 on
+success, 1 on any error, 2 on conflicting existing records (stderr explains).
 """
 
 from __future__ import annotations
@@ -32,6 +36,10 @@ API = "https://api.cloudflare.com/client/v4"
 
 class CloudflareError(Exception):
     pass
+
+
+class ConflictError(CloudflareError):
+    """Existing records would have to be overwritten or deleted."""
 
 
 def _request(
@@ -76,12 +84,18 @@ def find_zone(token: str, domain: str) -> tuple[str, str]:
             return zones[0]["id"], zones[0]["name"]
     raise CloudflareError(
         f"no Cloudflare zone found for {domain}: add the domain to Cloudflare "
-        "and give the token access to it"
+        "and give the token Zone:Read + DNS:Edit access to it"
     )
 
 
-def upsert_a_record(token: str, zone_id: str, name: str, ip: str) -> str:
-    """Make `name` a DNS-only A record pointing at ip. Returns what was done."""
+def upsert_a_record(
+    token: str, zone_id: str, name: str, ip: str, *, force: bool = False
+) -> str:
+    """Make `name` a DNS-only A record pointing at ip. Returns what was done.
+
+    Raises ConflictError instead of touching records that point elsewhere,
+    are proxied, or are duplicated, unless ``force`` is set.
+    """
     query = urllib.parse.urlencode({"name": name})
     existing = _request(token, "GET", f"/zones/{zone_id}/dns_records?{query}")
     for record in existing:
@@ -102,10 +116,19 @@ def upsert_a_record(token: str, zone_id: str, name: str, ip: str) -> str:
         _request(token, "POST", f"/zones/{zone_id}/dns_records", body)
         return "created"
     record, *extra = a_records
-    for duplicate in extra:
-        _request(token, "DELETE", f"/zones/{zone_id}/dns_records/{duplicate['id']}")
     if record["content"] == ip and not record.get("proxied") and not extra:
         return "unchanged"
+    if not force:
+        found = ", ".join(
+            f"{r['content']}{' (proxied)' if r.get('proxied') else ''}"
+            for r in a_records
+        )
+        raise ConflictError(
+            f"{name} already has A record(s): {found}; refusing to replace them "
+            f"with {ip} (DNS only)"
+        )
+    for duplicate in extra:
+        _request(token, "DELETE", f"/zones/{zone_id}/dns_records/{duplicate['id']}")
     _request(token, "PUT", f"/zones/{zone_id}/dns_records/{record['id']}", body)
     return "updated"
 
@@ -114,6 +137,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--domain", required=True)
     parser.add_argument("--ip", required=True)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite conflicting A records and delete duplicates",
+    )
     args = parser.parse_args()
 
     token = os.environ.get("CF_API_TOKEN", "").strip()
@@ -131,8 +159,11 @@ def main() -> int:
         zone_id, zone_name = find_zone(token, domain)
         print(f"Cloudflare zone: {zone_name}")
         for name in (domain, f"*.{domain}"):
-            result = upsert_a_record(token, zone_id, name, ip)
+            result = upsert_a_record(token, zone_id, name, ip, force=args.force)
             print(f"  A {name} -> {ip} (DNS only): {result}")
+    except ConflictError as exc:
+        print(f"conflict: {exc}", file=sys.stderr)
+        return 2
     except CloudflareError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
