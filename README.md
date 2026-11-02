@@ -6,14 +6,14 @@
 
 **Self-hosted HTTPS tunnels over plain SSH. No client and no signup. One command to deploy.**
 
-[![CI](https://github.com/publichost-run/publichost-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/publichost-run/publichost-backend/actions/workflows/ci.yml)
-[![Coverage](https://codecov.io/gh/publichost-run/publichost-backend/graph/badge.svg)](https://codecov.io/gh/publichost-run/publichost-backend)
+[![CI](https://github.com/publichost-run/publichost/actions/workflows/ci.yml/badge.svg)](https://github.com/publichost-run/publichost/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/publichost-run/publichost/graph/badge.svg)](https://codecov.io/gh/publichost-run/publichost)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Docker Compose](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![GitHub stars](https://img.shields.io/github/stars/publichost-run/publichost-backend?style=social)](https://github.com/publichost-run/publichost-backend/stargazers)
+[![GitHub stars](https://img.shields.io/github/stars/publichost-run/publichost?style=social)](https://github.com/publichost-run/publichost/stargazers)
 
 [Quick start](#-quick-start) •
 [Self-host](#-self-host-in-one-command) •
@@ -87,11 +87,11 @@ list commands, and Ctrl+C to close the tunnel.
 **Then:**
 
 ```bash
-git clone https://github.com/publichost-run/publichost-backend.git
+git clone https://github.com/publichost-run/publichost.git
 ```
 
 ```bash
-cd publichost-backend && ./deploy.sh
+cd publichost && ./deploy.sh
 ```
 
 The script asks for the domain, an email for Let's Encrypt, the SSH port and

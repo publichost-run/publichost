@@ -7,7 +7,7 @@ security reports seriously.
 
 Report privately through GitHub:
 **Security → Report a vulnerability**
-(<https://github.com/publichost-run/publichost-backend/security/advisories/new>).
+(<https://github.com/publichost-run/publichost/security/advisories/new>).
 
 Please include the affected version or commit, steps to reproduce, and the
 impact you expect. We aim to acknowledge reports within 3 working days and to
