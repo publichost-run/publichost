@@ -6,6 +6,7 @@
 
 **Self-hosted HTTPS tunnels over plain SSH. No client and no signup. One command to deploy.**
 
+[![Release](https://img.shields.io/github/v/release/publichost-run/publichost?sort=semver)](https://github.com/publichost-run/publichost/releases)
 [![CI](https://github.com/publichost-run/publichost/actions/workflows/ci.yml/badge.svg)](https://github.com/publichost-run/publichost/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/publichost-run/publichost/graph/badge.svg)](https://codecov.io/gh/publichost-run/publichost)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -125,6 +126,14 @@ CF_API_TOKEN=... ./deploy.sh --domain tunnel.example.com --email you@example.com
 | `./deploy.sh --staging` | test against the Let's Encrypt staging CA |
 | `./deploy.sh uninstall` | stop and **delete** all data |
 
+Skip the local build by running a published multi-arch image (amd64/arm64)
+from [GHCR](https://github.com/publichost-run/publichost/pkgs/container/publichost);
+keep its version in sync with your checkout:
+
+```bash
+./deploy.sh --image ghcr.io/publichost-run/publichost:1.0.0
+```
+
 Clients can use port **22** only after you move the server's own `sshd` to
 another port. Make sure you can still log in before you do.
 
@@ -241,7 +250,10 @@ uv run ruff format        # formatting
 ## 🤝 Contributing
 
 Issues and pull requests are welcome. Start with
-[CONTRIBUTING.md](CONTRIBUTING.md). If PublicHost is useful to you, a ⭐ helps
+[CONTRIBUTING.md](CONTRIBUTING.md) and look for
+[`good first issue`](https://github.com/publichost-run/publichost/labels/good%20first%20issue).
+Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Changes are listed in
+the [CHANGELOG](CHANGELOG.md). If PublicHost is useful to you, a ⭐ helps
 others find it.
 
 ## 📄 License

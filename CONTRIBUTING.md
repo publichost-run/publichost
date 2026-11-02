@@ -43,7 +43,21 @@ CI runs the same checks plus `shellcheck` on `deploy.sh` and a Docker build.
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/),
   e.g. `fix(proxy): route Host header case-insensitively`.
 
-More background on the architecture is in [AGENTS.md](AGENTS.md).
+More background on the architecture is in [AGENTS.md](AGENTS.md). By
+participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Releases
+
+Maintainers add the release to [CHANGELOG.md](CHANGELOG.md), bump `version` in
+`pyproject.toml`, merge to `main` and push a tag:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+The `Release` workflow then publishes `ghcr.io/publichost-run/publichost`
+images (`1.0.0`, `1.0`, `latest`; `main` publishes `edge`) and creates the
+GitHub release with generated notes.
 
 ## Reporting security issues
 

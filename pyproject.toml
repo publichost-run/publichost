@@ -1,7 +1,7 @@
 [project]
 name = "publichost-backend"
-version = "0.1.0"
-description = "SSH server handing out one-time *.publichost.run subdomains for tunnels to localhost"
+version = "1.0.0"
+description = "Self-hosted HTTPS tunnels over plain SSH with one-time subdomains"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
